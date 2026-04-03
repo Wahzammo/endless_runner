@@ -162,6 +162,8 @@ export class SessionManager {
       this.session!.callsRemaining--;
 
       const hash = await this.sessionWallet.writeContract({
+        chain: baseSepolia,
+        account: this.sessionWallet.account!,
         address: POWER_UP_NFT_ADDRESS,
         abi: POWER_UP_ABI,
         functionName: "useAndBurn",
