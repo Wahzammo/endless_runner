@@ -1,3 +1,7 @@
+// TODO: Not yet wired into Game.tsx. Needs Aseprite sprite assets
+// (PNG spritesheet + JSON metadata) before it can replace the placeholder
+// rectangles in the game loop. See export instructions below.
+//
 // ============================================================
 // SpriteAnimator.ts
 // Drop into /lib or /components — works with Aseprite JSON export
