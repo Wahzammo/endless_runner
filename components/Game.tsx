@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { generateCommentary } from '@/lib/gemini';
+import { ParallaxBackground } from '@/lib/ParallaxBackground';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface GameProps {
@@ -39,6 +40,12 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const bg = new ParallaxBackground(canvas.width, canvas.height)
+      .addLayer({ src: '/bg/sky.png',       speedFactor: 0.05 })
+      .addLayer({ src: '/bg/city_far.png',  speedFactor: 0.15 })
+      .addLayer({ src: '/bg/city_near.png', speedFactor: 0.35 })
+      .addLayer({ src: '/bg/street.png',    speedFactor: 0.6  });
+
     // Reset all game state on every mount (handles TRY AGAIN remounts)
     gameState.current = {
       player: { y: canvas.height - 80, dy: 0, jumping: false, width: 40, height: 40 },
@@ -65,9 +72,13 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     canvas.addEventListener('touchstart', handleTouch, { passive: false });
 
     let animationFrameId: number;
+    let lastTime = 0;
 
-    const loop = () => {
+    const loop = (timestamp: number) => {
       if (isPaused || gameState.current.gameOver) return;
+
+      const deltaTime = timestamp - lastTime;
+      lastTime = timestamp;
 
       // Update
       gameState.current.frameCount++;
@@ -132,9 +143,9 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       // Draw
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Background (Simple parallax)
-      ctx.fillStyle = '#1a1a1a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Background (Parallax layers)
+      bg.update(deltaTime, gameState.current.speed);
+      bg.draw(ctx);
       
       // Ground
       ctx.fillStyle = '#333';
@@ -169,7 +180,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       setTimeout(() => setCommentary(null), 4000);
     };
 
-    loop();
+    requestAnimationFrame(loop);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
