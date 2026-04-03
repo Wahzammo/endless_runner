@@ -1,3 +1,6 @@
+// TODO: Not yet wired into Game.tsx. This is a complete power-up system
+// ready to integrate — see usage comments at the bottom of this file.
+//
 // ============================================================
 // PowerUpSystem.ts  —  /lib/PowerUpSystem.ts
 // Vampire Survivors-style power-up pause + selection

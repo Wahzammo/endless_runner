@@ -35,4 +35,9 @@ export const ONCHAIN_ARCADE_ABI = [
   },
 ] as const;
 
-export const ONCHAIN_ARCADE_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
+const rawAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
+const isValidAddress = rawAddress && /^0x[a-fA-F0-9]{40}$/.test(rawAddress);
+
+export const ONCHAIN_ARCADE_ADDRESS: `0x${string}` | undefined = isValidAddress
+  ? (rawAddress as `0x${string}`)
+  : undefined;

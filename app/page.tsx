@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Navbar } from '@/components/Navbar';
 import { Game } from '@/components/Game';
+import { GameErrorBoundary } from '@/components/GameErrorBoundary';
 import { useAccount, useWriteContract } from 'wagmi';
 import { motion, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
@@ -13,14 +14,26 @@ export default function Home() {
   const [gameState, setGameState] = useState<'start' | 'playing' | 'gameover'>('start');
   const [finalScore, setFinalScore] = useState(0);
   const [gameKey, setGameKey] = useState(0);
+  const [paused, setPaused] = useState(false);
 
   const { writeContract, isPending: isSubmitting, isSuccess: isSubmitted, isError: submitError } = useWriteContract();
 
-  const startGame = () => {
+  const startGame = useCallback(() => {
     if (!isConnected) return;
     setGameKey(k => k + 1);
+    setPaused(false);
     setGameState('playing');
-  };
+  }, [isConnected]);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.code === 'Escape' && gameState === 'playing') {
+        setPaused(p => !p);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [gameState]);
 
   const handleGameOver = (score: number) => {
     setFinalScore(score);
@@ -88,7 +101,9 @@ export default function Home() {
               animate={{ opacity: 1 }}
               className="w-full"
             >
-              <Game key={gameKey} onGameOver={handleGameOver} isPaused={false} />
+              <GameErrorBoundary onReset={startGame}>
+                <Game key={gameKey} onGameOver={handleGameOver} isPaused={paused} />
+              </GameErrorBoundary>
             </motion.div>
           )}
 

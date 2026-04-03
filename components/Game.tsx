@@ -5,6 +5,15 @@ import { generateCommentary } from '@/lib/gemini';
 import { ParallaxBackground } from '@/lib/ParallaxBackground';
 import { motion, AnimatePresence } from 'motion/react';
 
+// Game constants
+const GROUND_HEIGHT = 40;
+const PLAYER_WIDTH = 40;
+const PLAYER_HEIGHT = 40;
+const PLAYER_X = 50;
+const GRAVITY = 0.8;
+const JUMP_VELOCITY = -15;
+const INITIAL_SPEED = 5;
+
 interface GameProps {
   onGameOver: (score: number) => void;
   isPaused: boolean;
@@ -16,12 +25,12 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
   const [commentary, setCommentary] = useState<string | null>(null);
   const [isGameOver, setIsGameOver] = useState(false);
   const lastCommentaryTime = useRef(0);
-  
+
   // Game state refs to avoid closure issues in loop
   const gameState = useRef({
-    player: { y: 0, dy: 0, jumping: false, width: 40, height: 40 },
+    player: { y: 0, dy: 0, jumping: false, width: PLAYER_WIDTH, height: PLAYER_HEIGHT },
     obstacles: [] as { x: number, width: number, height: number }[],
-    speed: 5,
+    speed: INITIAL_SPEED,
     distance: 0,
     gameOver: false,
     frameCount: 0,
@@ -29,7 +38,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
 
   const jump = () => {
     if (!gameState.current.player.jumping && !gameState.current.gameOver) {
-      gameState.current.player.dy = -15;
+      gameState.current.player.dy = JUMP_VELOCITY;
       gameState.current.player.jumping = true;
     }
   };
@@ -40,17 +49,29 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Size canvas to container
+    const resizeCanvas = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      bg.resize(canvas.width, canvas.height);
+    };
+
     const bg = new ParallaxBackground(canvas.width, canvas.height)
       .addLayer({ src: '/bg/sky.png',       speedFactor: 0.05 })
       .addLayer({ src: '/bg/city_far.png',  speedFactor: 0.15 })
       .addLayer({ src: '/bg/city_near.png', speedFactor: 0.35 })
       .addLayer({ src: '/bg/street.png',    speedFactor: 0.6  });
 
+    resizeCanvas();
+
+    const groundY = () => canvas.height - GROUND_HEIGHT;
+    const playerStartY = () => groundY() - PLAYER_HEIGHT;
+
     // Reset all game state on every mount (handles TRY AGAIN remounts)
     gameState.current = {
-      player: { y: canvas.height - 80, dy: 0, jumping: false, width: 40, height: 40 },
+      player: { y: playerStartY(), dy: 0, jumping: false, width: PLAYER_WIDTH, height: PLAYER_HEIGHT },
       obstacles: [],
-      speed: 5,
+      speed: INITIAL_SPEED,
       distance: 0,
       gameOver: false,
       frameCount: 0,
@@ -71,14 +92,20 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     };
     canvas.addEventListener('touchstart', handleTouch, { passive: false });
 
+    const observer = new ResizeObserver(() => resizeCanvas());
+    observer.observe(canvas);
+
     let animationFrameId: number;
     let lastTime = 0;
+    let lastMilestone = 0;
 
     const loop = (timestamp: number) => {
       if (isPaused || gameState.current.gameOver) return;
 
       const deltaTime = timestamp - lastTime;
       lastTime = timestamp;
+
+      const ground = groundY();
 
       // Update
       gameState.current.frameCount++;
@@ -87,10 +114,10 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
 
       // Gravity
       gameState.current.player.y += gameState.current.player.dy;
-      gameState.current.player.dy += 0.8;
+      gameState.current.player.dy += GRAVITY;
 
-      if (gameState.current.player.y > canvas.height - 80) {
-        gameState.current.player.y = canvas.height - 80;
+      if (gameState.current.player.y > ground - PLAYER_HEIGHT) {
+        gameState.current.player.y = ground - PLAYER_HEIGHT;
         gameState.current.player.dy = 0;
         gameState.current.player.jumping = false;
       }
@@ -109,19 +136,18 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
         });
       }
 
-      gameState.current.obstacles.forEach((obs, index) => {
+      gameState.current.obstacles.forEach((obs) => {
         obs.x -= gameState.current.speed;
-        
-        // Collision
+
+        // AABB Collision: player rect vs obstacle rect
         const p = gameState.current.player;
-        const px = 50;
-        const py = p.y;
-        
+        const obsTop = ground - obs.height;
+
         if (
-          px < obs.x + obs.width &&
-          px + p.width > obs.x &&
-          py < canvas.height - 40 &&
-          py + p.height > canvas.height - 40 - obs.height
+          PLAYER_X < obs.x + obs.width &&
+          PLAYER_X + p.width > obs.x &&
+          p.y < obsTop + obs.height &&
+          p.y + p.height > obsTop
         ) {
           gameState.current.gameOver = true;
           setIsGameOver(true);
@@ -133,11 +159,10 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       gameState.current.obstacles = gameState.current.obstacles.filter(obs => obs.x + obs.width > 0);
 
       // AI Commentary Triggers
-      const now = Date.now();
-      if (now - lastCommentaryTime.current > 15000) {
-        if (Math.floor(gameState.current.distance) % 500 < 5 && gameState.current.distance > 100) {
-          triggerCommentary('milestone');
-        }
+      const currentMilestone = Math.floor(gameState.current.distance / 500);
+      if (currentMilestone > lastMilestone && gameState.current.distance > 100) {
+        lastMilestone = currentMilestone;
+        triggerCommentary('milestone');
       }
 
       // Draw
@@ -146,16 +171,16 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       // Background (Parallax layers)
       bg.update(deltaTime, gameState.current.speed);
       bg.draw(ctx);
-      
+
       // Ground
       ctx.fillStyle = '#333';
-      ctx.fillRect(0, canvas.height - 40, canvas.width, 40);
+      ctx.fillRect(0, ground, canvas.width, GROUND_HEIGHT);
 
       // Player
       ctx.fillStyle = '#00ffcc';
       ctx.shadowBlur = 15;
       ctx.shadowColor = '#00ffcc';
-      ctx.fillRect(50, gameState.current.player.y, gameState.current.player.width, gameState.current.player.height);
+      ctx.fillRect(PLAYER_X, gameState.current.player.y, PLAYER_WIDTH, PLAYER_HEIGHT);
       ctx.shadowBlur = 0;
 
       // Obstacles
@@ -163,7 +188,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       ctx.shadowBlur = 10;
       ctx.shadowColor = '#ff0055';
       gameState.current.obstacles.forEach(obs => {
-        ctx.fillRect(obs.x, canvas.height - 40 - obs.height, obs.width, obs.height);
+        ctx.fillRect(obs.x, ground - obs.height, obs.width, obs.height);
       });
       ctx.shadowBlur = 0;
 
@@ -173,7 +198,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     const triggerCommentary = async (type: string) => {
       const now = Date.now();
       if (now - lastCommentaryTime.current < 5000 && type !== 'death') return;
-      
+
       lastCommentaryTime.current = now;
       const text = await generateCommentary(type === 'death' ? 'player died' : 'player reached milestone', Math.floor(gameState.current.distance));
       setCommentary(text);
@@ -185,14 +210,15 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       canvas.removeEventListener('touchstart', handleTouch);
+      observer.disconnect();
       cancelAnimationFrame(animationFrameId);
     };
   }, [isPaused, onGameOver]);
 
   return (
     <div className="relative w-full max-w-4xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer" onClick={jump}>
-      <canvas ref={canvasRef} width={800} height={450} className="w-full h-full" />
-      
+      <canvas ref={canvasRef} className="w-full h-full" />
+
       <div className="absolute top-4 left-4 font-arcade text-cyan-400 text-xl neon-text">
         SCORE: {score}
       </div>

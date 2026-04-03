@@ -1,3 +1,6 @@
+// TODO: Available for responsive game controls (e.g. touch-optimized UI on mobile).
+// Not currently imported anywhere.
+
 import * as React from "react"
 
 const MOBILE_BREAKPOINT = 768

@@ -1,3 +1,7 @@
+// TODO: Not yet wired into Game.tsx. References NEXT_PUBLIC_POWER_UP_NFT_ADDRESS
+// which does not exist yet — needs the power-up NFT contract to be deployed first.
+// Wire this in alongside PowerUpSystem.ts when the NFT contract is ready.
+//
 // ============================================================
 // SESSION KEY + BURN-ON-USE INTEGRATION
 // /lib/GameSession.ts
