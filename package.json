@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@coinbase/onchainkit": "^1.1.2",
-    "@google/genai": "^1.17.0",
+    "@google/genai": "^1.48.0",
     "@hookform/resolvers": "^5.2.1",
     "@tanstack/react-query": "^5.96.1",
     "autoprefixer": "^10.4.21",
