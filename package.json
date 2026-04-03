@@ -13,7 +13,7 @@
     "@coinbase/onchainkit": "^1.1.2",
     "@google/genai": "^1.17.0",
     "@hookform/resolvers": "^5.2.1",
-    "@tanstack/react-query": "^5.95.2",
+    "@tanstack/react-query": "^5.96.1",
     "autoprefixer": "^10.4.21",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
