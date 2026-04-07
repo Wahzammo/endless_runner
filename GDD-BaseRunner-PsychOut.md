@@ -410,6 +410,8 @@ Small "CHAOS" indicator in corner — shows current chaos event cooldown as a th
 
 ## 17. Procedural Generation System
 
+> **Implementation reference:** `lib/procgen.ts` and `lib/procgen.test.ts`. This section reflects what actually ships, not just intent. Update both this section and the code in lockstep — the impossibility contract test is the safety net that keeps them honest.
+
 ### The Core Distinction
 
 **Random** = `Math.random()` per obstacle. No guarantees. Can produce back-to-back impossible sequences. Feels cheap and unfair — players blame the game, not themselves.
@@ -423,128 +425,231 @@ The rule: **you never spawn an individual obstacle. You select and place a patte
 ### Architecture
 
 ```
-SpeedTier (1–5)
-    └─> PatternLibrary.getWeightedPool(tier)
-            └─> seededRNG.pick(pool)
-                    └─> PatternChunk.validate(tier)  ← gate — never skipped
-                            └─> spawn chunk at world x
+gameLoop (60Hz)
+    │
+    ├─> nextChunkX -= currentSpeed     ← spawn cursor slides with the world
+    │
+    └─> if nextChunkX <= canvas.width
+            └─> selectNextChunk(rng, prevChunkId, currentSpeed)
+                    │
+                    ├─ 1. selectBucket()     ← 15% breath, else tier-weighted easy/medium/hard
+                    ├─ 2. filter pool        ← not prev, in bucket, difficulty ≤ tier,
+                    │                          every obstacle isClearable() at currentSpeed
+                    ├─ 3. equal-weight pick  ← random candidate from filtered pool
+                    └─ 4. spawnChunk()       ← drops obstacles into game state,
+                                               advances nextChunkX by chunk.width + minGapAfter
 ```
+
+There is no separate "validate" gate after selection. Validation happens **during** filtering — `isClearable()` is part of the candidate filter, so an unclearable chunk literally can't be picked. If the filter ever empties the pool the selector falls back to easy + breath chunks so the run never deadlocks.
 
 ---
 
 ### Seeded RNG
 
-Use a deterministic PRNG — [mulberry32](https://github.com/bryc/code/blob/master/jshash.md#mulberry32) is 4 lines and fast enough.
+Deterministic [mulberry32](https://github.com/bryc/code/blob/master/jshash.md#mulberry32) PRNG, lives in `lib/procgen.ts`:
 
 ```typescript
-function mulberry32(seed: number) {
-  return function() {
-    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
-    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  }
+export function mulberry32(seed: number): () => number {
+  let s = seed | 0;
+  return function () {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 ```
 
-Seed is generated fresh each run (`Date.now() ^ playerAddress`). Same seed = identical run — useful for debugging and potential future "daily challenge" mode. `Math.random()` is never used in obstacle logic.
+**Current seeding:** `mulberry32(Date.now() & 0xffffffff)` per run mount in `Game.tsx`. Same seed = identical run, but the seed isn't surfaced anywhere yet — it's deterministic per session, useful for bug repros if we add a "show seed" debug overlay.
+
+**Future hook:** wallet-derived seeds (`Date.now() ^ playerAddressHash`) for daily challenges and shareable runs. The RNG layer doesn't need to change — just where the seed comes from.
+
+`Math.random()` is forbidden inside `lib/procgen.ts` and inside the obstacle-spawning path of `Game.tsx`. The RNG instance is the only source of randomness for chunk selection.
+
+---
+
+### Spawn Cursor (`nextChunkX`)
+
+Implementation detail worth documenting because it explains how chunks land in the right place at any speed:
+
+- `nextChunkX` is a screen-coordinate marker representing "where the next chunk's leading edge will appear."
+- Initialised at `canvas.width + 200` so the first chunk spawns just off the right edge with a 200px head start.
+- Decremented by `currentSpeed` every frame, so it slides left at exactly the same rate as the rest of the world.
+- When `nextChunkX <= canvas.width`, the cursor is now visible — `selectNextChunk()` runs and `spawnChunk()` drops every obstacle in the chosen pattern at `nextChunkX + obstacle.xOffset`.
+- After spawning, `nextChunkX += chunk.width + chunk.minGapAfter` — the cursor jumps to where the next chunk should anchor, guaranteeing the breathing room.
+
+The cursor approach means spawn timing is decoupled from frame count entirely. No `frameCount % n` checks, no speed-dependent intervals — chunks land where they should regardless of how fast the world is moving.
 
 ---
 
 ### Pattern Library
 
-Each entry is a **chunk**: a fixed-width slice of the world with one or more obstacles at defined positions. Chunks are hand-authored, not generated.
+Each entry is a **chunk**: a fixed-width slice of the world with zero or more obstacles at fixed positions. All obstacles are ground-aligned in Phase 1 — aerial bars, pits, and the duck mechanic come later.
 
-**Chunk anatomy:**
+**Chunk anatomy (TypeScript types from `lib/procgen.ts`):**
+
+```typescript
+type Obstacle = {
+  xOffset: number;   // local x within the chunk, ground-aligned
+  width: number;
+  height: number;
+};
+
+type Pattern = {
+  id: string;
+  width: number;          // total slice width in px
+  obstacles: Obstacle[];  // empty for breath chunks
+  difficulty: 1 | 2 | 3 | 4 | 5;
+  minGapAfter: number;    // px of empty corridor before the next chunk
+};
 ```
-width: number          // world units, defines gap before next chunk
-obstacles: [{
-  type: 'ground' | 'aerial' | 'pit',
-  x: number,           // offset within chunk
-  height: number,
-  requiresJump: bool,
-  requiresDuck: bool,
-}]
-difficulty: 1–5        // max speed tier this chunk is valid at
-minGapAfter: number    // enforced breathing room after this chunk
-```
 
-**Phase 1 pattern library (hand-authored, ~15 chunks):**
+**Phase 1 pattern library — 15 chunks (2 breath, 13 combat):**
 
-| ID | Description | Avoid by | Max tier |
-|----|------------|----------|----------|
-| P01 | Single ground crate | Jump | 5 |
-| P02 | Single aerial bar | Duck | 5 |
-| P03 | Two ground crates, jumpable gap | Jump twice | 5 |
-| P04 | Ground crate then aerial bar | Jump then duck | 4 |
-| P05 | Tall crate (forces jump, not duck) | Jump | 5 |
-| P06 | Short aerial (forces duck, not jump) | Duck | 5 |
-| P07 | Three-crate staircase, wide | Jump early | 3 |
-| P08 | Ground + aerial same column (gap to pass through middle) | Precise jump height | 3 |
-| P09 | Double aerial bars, tight spacing | Duck, stay down | 3 |
-| P10 | Pit (no floor for 3 units) | Don't fall | 4 |
-| P11 | Crate before pit edge | Jump clears both | 3 |
-| P12 | Breathing room (empty chunk) | — | 5 |
-| P13 | Aerial only, very low | Duck and hold | 2 |
-| P14 | Two pits separated by one tile | Jump, land, jump | 2 |
-| P15 | Crate-aerial-crate sandwich | Jump, duck, jump | 2 |
+| ID | Difficulty | Description | Avoid by |
+|----|-----------|-------------|----------|
+| `breath_short` | breath | 200px empty corridor | — |
+| `breath_long` | breath | 350px empty corridor | — |
+| `single_low` | 1 | One short bump (h=35, w=30) | Jump |
+| `single_med` | 2 | One medium block (h=55, w=35) | Jump |
+| `wide_short` | 2 | One wide low block (h=30, w=70) | Jump |
+| `pair_far` | 2 | Two short bumps spaced 200px apart | Jump twice |
+| `tall_thin` | 3 | One tall thin spike (h=80, w=25) | Jump |
+| `staircase_up` | 3 | Short bump then taller bump | Jump twice |
+| `pair_near` | 3 | Two medium bumps ~150px apart | Jump twice |
+| `triple` | 4 | Three obstacles spaced ~140px | Jump three times |
+| `tall_double` | 4 | Two tall thin spikes 150px apart | Jump twice |
+| `wall` | 4 | One tall wide block (h=95, w=50) | Jump |
+| `gauntlet` | 5 | Four alternating low/tall obstacles | Jump four times |
+| `split_jump` | 5 | Two near-apex spikes 120px apart | Precise rhythm |
+| `fortress` | 5 | One huge wall (h=100, w=80) | Jump |
+
+All combat obstacle heights stay below the jump apex (~140px). Chunk authors space multi-obstacle chunks generously — see the "Known gap" note under Impossibility Contract.
 
 ---
 
-### Speed Tiers & Pattern Weights
+### Speed Tiers & Bucket Weights
 
-Speed tiers map to difficulty. Higher tier = more weight on harder patterns. Easier patterns never fully disappear — the game stays varied, not sadistic.
+The player starts at `INITIAL_SPEED = 5` and accelerates by +0.5 every 500 frames, **capped at `MAX_SPEED = 15`** (3.0× base). The speed range is divided into 5 tiers via `getSpeedTier(speed)`:
 
-| Tier | Speed multiplier | Locked patterns | Weight distribution |
-|------|-----------------|----------------|-------------------|
-| 1 | 1.0× | None | 80% easy (P01-P06), 20% medium (P07-P11) |
-| 2 | 1.5× | None | 50% easy, 40% medium, 10% hard |
-| 3 | 2.0× | P13, P14, P15 unlocked | 30% easy, 50% medium, 20% hard |
-| 4 | 2.5× | All unlocked | 20% easy, 40% medium, 40% hard |
-| 5 | 3.0× (cap) | All unlocked | 10% easy, 30% medium, 60% hard |
+| Tier | Speed range | Ratio |
+|------|------------|-------|
+| 1 | 5.00 – 6.24 | 1.0× – 1.25× |
+| 2 | 6.25 – 8.74 | 1.25× – 1.75× |
+| 3 | 8.75 – 11.24 | 1.75× – 2.25× |
+| 4 | 11.25 – 13.74 | 2.25× – 2.75× |
+| 5 | 13.75 – 15.00 | 2.75× – 3.0× (cap) |
 
-P12 (breathing room) has a fixed 15% slot across all tiers — always present, prevents relentless pressure.
+**Bucket selection (`selectBucket()`):** breath is a flat 15% pre-roll at every tier. The remaining 85% rolls against tier-weighted easy / medium / hard distributions:
+
+| Tier | Easy | Medium | Hard |
+|------|------|--------|------|
+| 1 | 80% | 20% | 0% |
+| 2 | 50% | 40% | 10% |
+| 3 | 30% | 50% | 20% |
+| 4 | 20% | 40% | 40% |
+| 5 | 10% | 30% | 60% |
+
+Buckets map to difficulty ranges: **easy = difficulty 1–2**, **medium = difficulty 3**, **hard = difficulty 4–5**. Easier patterns never disappear — even at tier 5, easy chunks still appear 10% of the time. There are no "locked" patterns; difficulty is gated by the `difficulty <= tier` filter, not by unlock progression.
 
 ---
 
-### Placement Rules (enforced every spawn)
+### isClearable — The Physics Filter
 
-These fire as constraints before any chunk is placed. If a constraint fails, re-roll once, then fall back to a safe pattern:
+Per-obstacle clearability check, lives in `lib/procgen.ts`. This is the safety net that makes the impossibility contract enforceable at selection time.
 
-1. **No immediate repeat** — same chunk ID cannot spawn back-to-back
-2. **Minimum gap enforced** — `chunk.minGapAfter` units of clear ground after every chunk
-3. **Tier gate** — chunk `difficulty` must be ≤ current speed tier
-4. **Jump-height physics check** — at current speed, player CAN physically clear any `requiresJump` obstacle (recalculated when speed changes)
-5. **No overlapping hitboxes** — new chunk's obstacles cannot share x-space with previous chunk's tail
+**Inputs:** an obstacle (`{ width, height }`) and the current speed.
 
-Rule 4 is the critical one. When speed increases, the physics check reruns against all patterns in the active pool. Any pattern that becomes physically impossible at the new speed is removed from the pool until speed drops back (speed potion).
+**Step 1 — apex check.** The maximum height the player's bottom edge can reach is:
+
+```
+JUMP_APEX = JUMP_VELOCITY² / (2 · GRAVITY) = 15² / 1.6 ≈ 140 px
+```
+
+Any obstacle with `height >= JUMP_APEX` is rejected outright.
+
+**Step 2 — horizontal clearance.** Time spent above the obstacle's height (in frames):
+
+```
+dt = √(JUMP_VELOCITY² − 2 · GRAVITY · h) / (0.5 · GRAVITY)
+```
+
+Horizontal distance covered while airborne above height h:
+
+```
+clearance = dt · speed
+```
+
+**Step 3 — required clearance.** The player has to be entirely past the obstacle, so leading edge of player must clear trailing edge of obstacle:
+
+```
+required = obstacle.width + PLAYER_WIDTH
+```
+
+Clearable iff `clearance >= required`.
+
+**The interesting consequence:** wide obstacles get *harder* to clear at low speed, not high. A wide block at tier 1 may be impossible because the player isn't moving fast enough to fly over it before gravity drags them back down. The same block at tier 5 is trivial. This is why `selectNextChunk()` re-runs `isClearable()` on every spawn instead of caching a per-tier pool.
+
+---
+
+### Selection Pipeline (4 steps, in order)
+
+1. **Bucket roll.** `selectBucket(rng, tier)` — 15% breath, else weighted easy/medium/hard from the table above.
+2. **Filter pool.** Build the candidate list:
+    - `id !== prevChunkId` (no immediate repeats)
+    - difficulty in the chosen bucket's range
+    - `difficulty <= currentTier` (tier ceiling)
+    - every obstacle in the chunk passes `isClearable()` at `currentSpeed`
+3. **Pick.** Equal-weight random selection from the filtered candidates (could be tuned per-pattern later if some chunks deserve more screen time).
+4. **Spawn.** `spawnChunk()` pushes every obstacle in the chosen pattern into `gameState.obstacles` at `nextChunkX + obstacle.xOffset`, then advances `nextChunkX` by `chunk.width + chunk.minGapAfter` and updates `prevChunkId`.
+
+**Fallback chain.** If step 2 produces an empty pool (e.g. nothing in the "hard" bucket is clearable at current speed because everything's too wide), `selectNextChunk()` falls back to:
+1. Any difficulty-1 combat chunk that isn't a repeat and is clearable.
+2. The first breath chunk in the library.
+
+The selector never returns null and never deadlocks the run.
 
 ---
 
 ### Impossibility Contract
 
-Every pattern in the library has a `maxTier` value. Before the game ships, run a validation pass:
+Every pattern in the library is provably clearable at every speed tier where it can appear. The contract is enforced at CI time by Vitest:
 
 ```typescript
-// Pseudocode — run in dev/test only
-for (const pattern of patternLibrary) {
-  for (let tier = 1; tier <= pattern.maxTier; tier++) {
-    const speed = tierToSpeed(tier);
-    assert(canPlayerClear(pattern, speed), 
-      `Pattern ${pattern.id} is impossible at tier ${tier} speed ${speed}`);
-  }
-}
+// lib/procgen.test.ts
+describe('PATTERNS — impossibility contract', () => {
+  it('every combat pattern is clearable at the base speed of its difficulty tier', () => {
+    const boundarySpeedForTier = {
+      1: INITIAL_SPEED,
+      2: INITIAL_SPEED * 1.25,
+      3: INITIAL_SPEED * 1.75,
+      4: INITIAL_SPEED * 2.25,
+      5: INITIAL_SPEED * 2.75,
+    };
+    for (const p of PATTERNS) {
+      if (p.obstacles.length === 0) continue;
+      const minSpeed = boundarySpeedForTier[p.difficulty];
+      for (const o of p.obstacles) {
+        expect(isClearable(o, minSpeed)).toBe(true);
+      }
+    }
+  });
+});
 ```
 
-This is the guarantee. Every pattern that appears in the game has been proven clearable at the speed it appears at. Players cannot die to an impossible sequence — only to their own reaction time.
+Validation happens at the **slowest** speed each pattern can appear at — that's the worst case, because higher speed always increases horizontal clearance for a given obstacle height. If anyone adds a pattern that's mathematically impossible to clear, CI fails and the PR cannot merge.
 
-Chaos events (GRID SURGE, OBSTACLE BURST) are explicitly exempt from this contract. They're scripted, telegraphed, and optional to survive via invincibility. That's the deal.
+**Known gap.** The current contract validates **per-obstacle** clearability only. It does **not** validate that the player has enough physical distance between two obstacles in the same chunk to land and re-jump. Right now this is mitigated by hand — multi-obstacle chunks (`pair_far`, `pair_near`, `triple`, `gauntlet`, `staircase_up`, `tall_double`, `split_jump`) space their obstacles generously enough to be clearable in playtest, but the math isn't checked. A future pass should add a multi-obstacle physics walker that simulates a jump-land-jump sequence at each speed tier. Until then, **adding new multi-obstacle chunks requires manual physics review**.
+
+Chaos events (GRID SURGE, OBSTACLE BURST — see Section 16) are explicitly exempt from this contract. They're scripted, telegraphed, and intentionally survivable only via invincibility or skill. That's the deal.
 
 ---
 
 ### Anti-Patterns to Avoid
 
-- Never call `Math.random()` directly in obstacle logic — always use the seeded RNG instance
-- Never spawn based on frame count modulo alone (that's what the current placeholder does — replace it)
-- Never generate obstacle height randomly at spawn time — heights are fixed per pattern, not rolled
-- Never allow two "gap required" patterns in a row without a breathing room chunk between them
+- Never call `Math.random()` inside `lib/procgen.ts` or the obstacle-spawning path of `Game.tsx` — always use the seeded RNG instance
+- Never spawn based on frame count modulo alone — the spawn cursor (`nextChunkX`) is the only timing primitive
+- Never generate obstacle height or width randomly at spawn time — every value lives in the pattern library, fixed
+- Never allow two combat chunks to spawn back-to-back without their `minGapAfter` enforced — that's what breath chunks and the spawn cursor are for
+- Never bypass `isClearable()` — if a pattern needs a special-case rule, that rule belongs in the contract, not as an exception
+
