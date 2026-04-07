@@ -4,15 +4,21 @@ import React, { useEffect, useRef, useState } from 'react';
 import { generateCommentary } from '@/lib/gemini';
 import { ParallaxBackground } from '@/lib/ParallaxBackground';
 import { motion, AnimatePresence } from 'motion/react';
+import {
+  GRAVITY,
+  INITIAL_SPEED,
+  JUMP_VELOCITY,
+  MAX_SPEED,
+  PLAYER_HEIGHT,
+  PLAYER_WIDTH,
+  mulberry32,
+  selectNextChunk,
+  type Pattern,
+} from '@/lib/procgen';
 
 // Game constants
 const GROUND_HEIGHT = 40;
-const PLAYER_WIDTH = 40;
-const PLAYER_HEIGHT = 40;
 const PLAYER_X = 50;
-const GRAVITY = 0.8;
-const JUMP_VELOCITY = -15;
-const INITIAL_SPEED = 5;
 
 interface GameProps {
   onGameOver: (score: number) => void;
@@ -106,6 +112,29 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     let lastTime = 0;
     let lastMilestone = 0;
 
+    // ─── Procedural generation state ───────────────────────────────────────
+    // Seeded RNG so the same run is reproducible if we ever want to share
+    // seeds. Right now we just take the wall clock — wallet-derived seeds
+    // can come later.
+    const rng = mulberry32(Date.now() & 0xffffffff);
+    // x in screen coordinates where the next chunk's leading edge will spawn.
+    // Decrements with the world each frame; when it reaches the right edge of
+    // the canvas we drop in the next chunk.
+    let nextChunkX = canvas.width + 200;
+    let prevChunkId: string | null = null;
+
+    const spawnChunk = (chunk: Pattern) => {
+      for (const o of chunk.obstacles) {
+        gameState.current.obstacles.push({
+          x: nextChunkX + o.xOffset,
+          width: o.width,
+          height: o.height,
+        });
+      }
+      nextChunkX += chunk.width + chunk.minGapAfter;
+      prevChunkId = chunk.id;
+    };
+
     const loop = (timestamp: number) => {
       if (isPaused || gameState.current.gameOver) return;
 
@@ -129,18 +158,20 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
         gameState.current.player.jumping = false;
       }
 
-      // Speed ramp
-      if (gameState.current.frameCount % 500 === 0) {
-        gameState.current.speed += 0.5;
+      // Speed ramp — capped at 3.0× base (matches procgen tier 5).
+      if (
+        gameState.current.frameCount % 500 === 0 &&
+        gameState.current.speed < MAX_SPEED
+      ) {
+        gameState.current.speed = Math.min(gameState.current.speed + 0.5, MAX_SPEED);
       }
 
-      // Obstacles
-      if (gameState.current.frameCount % Math.max(60, 120 - Math.floor(gameState.current.speed * 2)) === 0) {
-        gameState.current.obstacles.push({
-          x: canvas.width,
-          width: 30 + Math.random() * 20,
-          height: 30 + Math.random() * 40,
-        });
+      // Procedural chunk spawning.
+      // Slide the spawn cursor along with the world, then spawn whenever the
+      // cursor reaches the right edge of the visible canvas.
+      nextChunkX -= gameState.current.speed;
+      if (nextChunkX <= canvas.width) {
+        spawnChunk(selectNextChunk(rng, prevChunkId, gameState.current.speed));
       }
 
       gameState.current.obstacles.forEach((obs) => {
