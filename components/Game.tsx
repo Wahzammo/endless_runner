@@ -56,11 +56,18 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       bg.resize(canvas.width, canvas.height);
     };
 
+    // Pick a random themed background set (1..8) per run. Night-only — the
+    // Day variants fight the arcade neon aesthetic and tank SCORE contrast.
+    // Each set ships 5 depth layers; we use 1, 2, 4, 5 to keep the existing
+    // 4-layer structure with an even back-to-front spread.
+    const setId = 1 + Math.floor(Math.random() * 8);
+    const base = `/bg/${setId}/Night`;
+
     const bg = new ParallaxBackground(canvas.width, canvas.height)
-      .addLayer({ src: '/bg/sky.png',       speedFactor: 0.05 })
-      .addLayer({ src: '/bg/city_far.png',  speedFactor: 0.15 })
-      .addLayer({ src: '/bg/city_near.png', speedFactor: 0.35 })
-      .addLayer({ src: '/bg/street.png',    speedFactor: 0.6  });
+      .addLayer({ src: `${base}/1.png`, speedFactor: 0.05 })
+      .addLayer({ src: `${base}/2.png`, speedFactor: 0.15 })
+      .addLayer({ src: `${base}/4.png`, speedFactor: 0.40 })
+      .addLayer({ src: `${base}/5.png`, speedFactor: 0.70 });
 
     resizeCanvas();
 
@@ -219,7 +226,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     <div className="relative w-full max-w-4xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer" onClick={jump}>
       <canvas ref={canvasRef} className="w-full h-full" />
 
-      <div className="absolute top-4 left-4 font-arcade text-cyan-400 text-xl neon-text">
+      <div className="absolute top-4 left-4 font-arcade text-cyan-400 text-xl neon-text bg-black/60 border border-cyan-500/60 rounded px-3 py-1">
         SCORE: {score}
       </div>
 
@@ -229,9 +236,9 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
             initial={{ opacity: 0, y: 20, scale: 0.8 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, scale: 0.8 }}
-            className="absolute top-1/4 right-10 max-w-xs bg-white text-black p-4 rounded-2xl rounded-tr-none font-arcade text-[10px] leading-relaxed shadow-[0_0_20px_rgba(255,255,255,0.5)]"
+            className="absolute top-1/4 right-10 max-w-xs bg-black/75 backdrop-blur-sm text-cyan-300 border border-cyan-400 p-4 rounded-2xl rounded-tr-none font-arcade text-[10px] leading-relaxed shadow-[0_0_20px_rgba(34,211,238,0.5)]"
           >
-            <div className="absolute -top-2 -right-2 w-4 h-4 bg-white rotate-45" />
+            <div className="absolute -top-2 -right-2 w-4 h-4 bg-black border-t border-r border-cyan-400 rotate-45" />
             {commentary}
           </motion.div>
         )}
