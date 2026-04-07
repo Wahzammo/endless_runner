@@ -56,11 +56,18 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       bg.resize(canvas.width, canvas.height);
     };
 
+    // Pick a random themed background set (1..8) and Day/Night variant per run.
+    // Each set ships 5 depth layers; we use 1, 2, 4, 5 to keep the existing
+    // 4-layer structure with an even back-to-front spread.
+    const setId = 1 + Math.floor(Math.random() * 8);
+    const variant = Math.random() < 0.5 ? 'Day' : 'Night';
+    const base = `/bg/${setId}/${variant}`;
+
     const bg = new ParallaxBackground(canvas.width, canvas.height)
-      .addLayer({ src: '/bg/sky.png',       speedFactor: 0.05 })
-      .addLayer({ src: '/bg/city_far.png',  speedFactor: 0.15 })
-      .addLayer({ src: '/bg/city_near.png', speedFactor: 0.35 })
-      .addLayer({ src: '/bg/street.png',    speedFactor: 0.6  });
+      .addLayer({ src: `${base}/1.png`, speedFactor: 0.05 })
+      .addLayer({ src: `${base}/2.png`, speedFactor: 0.15 })
+      .addLayer({ src: `${base}/4.png`, speedFactor: 0.40 })
+      .addLayer({ src: `${base}/5.png`, speedFactor: 0.70 });
 
     resizeCanvas();
 

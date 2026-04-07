@@ -119,13 +119,17 @@ export class ParallaxBackground {
 import { ParallaxBackground } from "@/lib/ParallaxBackground";
 
 // ── Init (once) ──────────────────────────────────────────────
+// Themed background sets live in /public/bg/{1..8}/{Day,Night}/{1..5}.png
+// Layer 1 = farthest sky, layer 5 = nearest foreground.
+const setId = 1 + Math.floor(Math.random() * 8);
+const variant = Math.random() < 0.5 ? "Day" : "Night";
+const base = `/bg/${setId}/${variant}`;
+
 const bg = new ParallaxBackground(canvas.width, canvas.height)
-  .addLayer({ src: "/bg/sky.png",        speedFactor: 0.05 }) // barely moves
-  .addLayer({ src: "/bg/city_far.png",   speedFactor: 0.15 }) // distant buildings
-  .addLayer({ src: "/bg/city_near.png",  speedFactor: 0.35 }) // mid buildings
-  .addLayer({ src: "/bg/street.png",     speedFactor: 0.6  }) // near detail
-  .addLayer({ src: "/bg/ground.png",     speedFactor: 1.0,    // matches game speed
-               y: canvas.height - 40, height: 40 });          // ground strip only
+  .addLayer({ src: `${base}/1.png`, speedFactor: 0.05 }) // barely moves
+  .addLayer({ src: `${base}/2.png`, speedFactor: 0.15 }) // distant
+  .addLayer({ src: `${base}/4.png`, speedFactor: 0.40 }) // mid
+  .addLayer({ src: `${base}/5.png`, speedFactor: 0.70 }); // near detail
 
 // ── Game loop ────────────────────────────────────────────────
 function gameLoop(timestamp: number) {
