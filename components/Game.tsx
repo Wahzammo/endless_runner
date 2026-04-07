@@ -45,6 +45,14 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
   const [chaosWarning, setChaosWarning] = useState<string | null>(null);
   const lastCommentaryTime = useRef(0);
 
+  // Mirror the isPaused prop into a ref so the main effect's game loop can
+  // read it without remounting. Without this the effect redeps on isPaused
+  // and a pause toggle tears down and re-creates the entire game state.
+  const pausedRef = useRef(isPaused);
+  useEffect(() => {
+    pausedRef.current = isPaused;
+  }, [isPaused]);
+
   // Game state refs to avoid closure issues in loop
   const gameState = useRef({
     player: { y: 0, dy: 0, jumping: false, width: PLAYER_WIDTH, height: PLAYER_HEIGHT },
@@ -144,6 +152,10 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     let animationFrameId: number;
     let lastTime = 0;
     let lastMilestone = 0;
+    // Tracks whether the previous frame was paused, so the resume frame can
+    // trigger the chaos cooldown reset required by GDD Section 16 without
+    // needing a React-layer pause listener.
+    let wasPausedLastFrame = false;
 
     // ─── Procedural generation + chaos RNGs ────────────────────────────────
     // Seeded RNG so the same run is reproducible if we ever want to share
@@ -242,7 +254,26 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     };
 
     const loop = (timestamp: number) => {
-      if (isPaused || gameState.current.gameOver) return;
+      // Game over — end the loop entirely. No more frames scheduled.
+      if (gameState.current.gameOver) return;
+
+      // Paused — keep the loop alive but freeze all game state updates.
+      // Keep lastTime current so when the player resumes, deltaTime is a
+      // single-frame step rather than the entire pause duration (otherwise
+      // the parallax background jumps violently on resume).
+      if (pausedRef.current) {
+        lastTime = timestamp;
+        wasPausedLastFrame = true;
+        animationFrameId = requestAnimationFrame(loop);
+        return;
+      }
+
+      // First frame after resume — reset the chaos cooldown per Section 16
+      // of the GDD ("Reset the cooldown timer when game resumes from pause").
+      if (wasPausedLastFrame) {
+        enterCooldown(timestamp);
+        wasPausedLastFrame = false;
+      }
 
       const deltaTime = timestamp - lastTime;
       lastTime = timestamp;
@@ -479,7 +510,10 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       observer.disconnect();
       cancelAnimationFrame(animationFrameId);
     };
-  }, [isPaused, onGameOver]);
+    // Note: isPaused is intentionally NOT in this dep array. It's mirrored
+    // into pausedRef above so the loop can read it without forcing the
+    // entire effect to remount (which would reset gameState).
+  }, [onGameOver]);
 
   return (
     <div className="relative w-full max-w-4xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer" onClick={jump}>
