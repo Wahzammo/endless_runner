@@ -16,10 +16,19 @@ import {
   selectNextChunk,
   type Pattern,
 } from '@/lib/procgen';
+import { PowerUpSystem, type PowerUpId } from '@/lib/PowerUpSystem';
 
 // Game constants
 const GROUND_HEIGHT = 40;
 const PLAYER_X = 50;
+
+// ─── Player HP / hurt window ────────────────────────────────────────────────
+const STARTING_LIVES = 3;
+// Post-hit invulnerability window — additional collisions during this window
+// are no-ops, and the player rect alpha-flickers as a visual stand-in for
+// the hurt animation. Tie this to the actual hurt sprite's frame count when
+// SpriteAnimator lands (NOR-259).
+const HURT_IFRAME_MS = 800;
 
 // ─── Chaos event constants (Section 16 of GDD-BaseRunner-PsychOut.md) ──────
 const CHAOS_COOLDOWN_MIN_SCORE = 750;
@@ -56,12 +65,21 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
   // Game state refs to avoid closure issues in loop
   const gameState = useRef({
     player: { y: 0, dy: 0, jumping: false, width: PLAYER_WIDTH, height: PLAYER_HEIGHT },
-    obstacles: [] as { x: number, width: number, height: number }[],
+    // Obstacles carry a `destroyed` flag so fireballs can mark them for
+    // removal without breaking the existing AABB collision pass.
+    obstacles: [] as { x: number, width: number, height: number, destroyed: boolean }[],
     speed: INITIAL_SPEED,
     distance: 0,
     gameOver: false,
     frameCount: 0,
+    // HP system — post-hit i-frames live on the same ref so the loop can
+    // check both in one branch.
+    lives: STARTING_LIVES,
+    iFramesUntil: 0, // performance.now() timestamp; 0 = no i-frames active
   });
+
+  // React state mirror of lives so the hearts HUD re-renders cleanly.
+  const [lives, setLives] = useState(STARTING_LIVES);
 
   // Chaos event state — implements Section 16 of GDD-BaseRunner-PsychOut.md.
   // Re-initialised on every effect mount alongside gameState.
@@ -82,6 +100,10 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     // second after an event finishes, then reverts to red as it depletes.
     refillFlashUntil: 0,
   });
+
+  // Power-up system instance — owns all card UI, fireball physics, active
+  // effect timers, and per-tick speed multiplier. Reset on every effect mount.
+  const powerUpSystemRef = useRef<PowerUpSystem | null>(null);
 
   const jump = () => {
     if (!gameState.current.player.jumping && !gameState.current.gameOver) {
@@ -129,8 +151,19 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       distance: 0,
       gameOver: false,
       frameCount: 0,
+      lives: STARTING_LIVES,
+      iFramesUntil: 0,
     };
+    setLives(STARTING_LIVES);
     lastCommentaryTime.current = 0;
+
+    // ─── Power-up system ────────────────────────────────────────────────
+    // Fresh instance per mount. Wallet inventory is currently stubbed —
+    // grant all four power-ups until ConsumableItems.sol (NOR-209) lands
+    // and Game.tsx can read real ownership from the player's wallet.
+    const powerUpSystem = new PowerUpSystem();
+    powerUpSystem.setOwnedFromNFTs(['health', 'invincible', 'timeslow', 'fireball']);
+    powerUpSystemRef.current = powerUpSystem;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
@@ -140,8 +173,34 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     };
     window.addEventListener('keydown', handleKeyDown);
 
+    // Translate a pointer event into canvas coordinates. Because resizeCanvas
+    // sets canvas.width = canvas.offsetWidth, internal canvas pixels match
+    // DOM pixels 1:1 — no scale factor needed.
+    const pointerToCanvas = (clientX: number, clientY: number) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    };
+
+    // Click handler — route to the power-up card overlay if it's showing,
+    // otherwise treat the click as a jump.
+    const handleCanvasClick = (e: MouseEvent) => {
+      const { x, y } = pointerToCanvas(e.clientX, e.clientY);
+      if (powerUpSystemRef.current?.isPaused) {
+        powerUpSystemRef.current.handleClick(x, y);
+        return;
+      }
+      jump();
+    };
+    canvas.addEventListener('click', handleCanvasClick);
+
     const handleTouch = (e: TouchEvent) => {
       e.preventDefault();
+      const touch = e.touches[0];
+      if (touch && powerUpSystemRef.current?.isPaused) {
+        const { x, y } = pointerToCanvas(touch.clientX, touch.clientY);
+        powerUpSystemRef.current.handleClick(x, y);
+        return;
+      }
       jump();
     };
     canvas.addEventListener('touchstart', handleTouch, { passive: false });
@@ -179,6 +238,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
           x: nextChunkX + o.xOffset,
           width: o.width,
           height: o.height,
+          destroyed: false,
         });
       }
       nextChunkX += chunk.width + chunk.minGapAfter;
@@ -209,11 +269,8 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       (p) => p.obstacles.length === 1 && p.difficulty <= 2,
     );
 
-    // TODO(NOR-260): replace this stub with the real PowerUpSystem.isInvincible()
-    // check once invincibility is wired into Game.tsx. Until then the player is
-    // always considered "not shielded" so the post-surge survival commentary
-    // always fires when the player makes it through.
-    const isInvincible = () => false;
+    // Real invincibility check, now that PowerUpSystem is wired.
+    const isInvincible = () => powerUpSystem.isInvincible;
 
     const enterCooldown = (timestamp: number) => {
       chaosState.current.phase = 'cooldown';
@@ -243,6 +300,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
           x: burstX + o.xOffset,
           width: o.width,
           height: o.height,
+          destroyed: false,
         });
         burstX += o.xOffset + o.width + OBSTACLE_BURST_GAP_PX;
       }
@@ -257,13 +315,32 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       // Game over — end the loop entirely. No more frames scheduled.
       if (gameState.current.gameOver) return;
 
-      // Paused — keep the loop alive but freeze all game state updates.
-      // Keep lastTime current so when the player resumes, deltaTime is a
-      // single-frame step rather than the entire pause duration (otherwise
-      // the parallax background jumps violently on resume).
-      if (pausedRef.current) {
+      // Paused — either via the Escape key (pausedRef) or via the power-up
+      // milestone card overlay (powerUpSystem.isPaused). Keep the loop alive
+      // but freeze all game state updates. Keep lastTime current so when the
+      // player resumes, deltaTime is a single-frame step rather than the
+      // entire pause duration (otherwise the parallax background jumps
+      // violently on resume).
+      if (pausedRef.current || powerUpSystem.isPaused) {
         lastTime = timestamp;
-        wasPausedLastFrame = true;
+        // Pin chaos warning + event timestamps to the current frame so the
+        // chaos timeline effectively restarts on resume. Without this, a
+        // long milestone pause taken during a warning would cause the loop
+        // to see elapsed > 3000ms on the resume frame and skip straight to
+        // firing the event with no edge pulse — bypassing the player's
+        // intended decision window.
+        if (chaosState.current.phase === 'warning') {
+          chaosState.current.warningStartedAt = timestamp;
+        } else if (chaosState.current.phase === 'event') {
+          chaosState.current.eventStartedAt = timestamp;
+        }
+        // Only Escape pause resets chaos cooldown on resume per GDD Section
+        // 16. The power-up card overlay is short and doesn't need a reset.
+        if (pausedRef.current) wasPausedLastFrame = true;
+        // Still draw the overlay so the player can see/click the cards.
+        if (powerUpSystem.isPaused) {
+          powerUpSystem.drawOverlay(ctx, canvas.width, canvas.height);
+        }
         animationFrameId = requestAnimationFrame(loop);
         return;
       }
@@ -278,11 +355,21 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       const deltaTime = timestamp - lastTime;
       lastTime = timestamp;
 
+      // Tick power-up system: expires timed effects, advances fireballs,
+      // returns the speed multiplier (1.0 normal, 0.5 if timeslow active).
+      const speedMultiplier = powerUpSystem.update(deltaTime);
+
       const ground = groundY();
+
+      // Effective speed = base speed × power-up multiplier. Used for all
+      // world advancement (distance, obstacle scrolling, spawn cursor).
+      // gameState.current.speed remains the base speed and is the only
+      // value the natural ramp + GRID SURGE write to.
+      const effectiveSpeed = gameState.current.speed * speedMultiplier;
 
       // Update
       gameState.current.frameCount++;
-      gameState.current.distance += gameState.current.speed / 10;
+      gameState.current.distance += effectiveSpeed / 10;
       setScore(Math.floor(gameState.current.distance));
 
       // Gravity
@@ -304,6 +391,13 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
         gameState.current.speed < MAX_SPEED
       ) {
         gameState.current.speed = Math.min(gameState.current.speed + 0.5, MAX_SPEED);
+      }
+
+      // Milestone power-up offer — call after distance update so the score
+      // we pass matches what's about to render. If a milestone fires, the
+      // overlay pauses the game on the next frame.
+      if (powerUpSystem.checkScoreTrigger(Math.floor(gameState.current.distance))) {
+        powerUpSystem.showOffer(canvas.width, canvas.height, onChoice);
       }
 
       // ─── Chaos events tick ──────────────────────────────────────────────
@@ -364,13 +458,37 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       // Procedural chunk spawning.
       // Slide the spawn cursor along with the world, then spawn whenever the
       // cursor reaches the right edge of the visible canvas.
-      nextChunkX -= gameState.current.speed;
+      // Note: selectNextChunk uses gameState.speed (base, not effective) so
+      // tier weighting follows the player's current natural progression
+      // rather than briefly easing during a timeslow.
+      nextChunkX -= effectiveSpeed;
       if (nextChunkX <= canvas.width) {
         spawnChunk(selectNextChunk(rng, prevChunkId, gameState.current.speed));
       }
 
+      // Fireball-vs-obstacle collision pass — runs before player collision
+      // so a fireball can destroy an obstacle the same frame the player
+      // would have hit it. Wraps each obstacle as PowerUpSystem expects.
+      for (const obs of gameState.current.obstacles) {
+        if (obs.destroyed) continue;
+        const wrapper = {
+          x: obs.x,
+          y: ground - obs.height,
+          w: obs.width,
+          h: obs.height,
+          isCrate: true,
+          destroyed: false,
+        };
+        powerUpSystem.checkFireballCrateCollision(wrapper);
+        if (wrapper.destroyed) obs.destroyed = true;
+      }
+
       gameState.current.obstacles.forEach((obs) => {
-        obs.x -= gameState.current.speed;
+        obs.x -= effectiveSpeed;
+
+        // Skip already-destroyed obstacles (collision and rendering handled
+        // by the destroyed flag — they'll be filtered out below).
+        if (obs.destroyed) return;
 
         // AABB Collision: player rect vs obstacle rect
         const p = gameState.current.player;
@@ -382,14 +500,32 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
           p.y < obsTop + obs.height &&
           p.y + p.height > obsTop
         ) {
-          gameState.current.gameOver = true;
-          setIsGameOver(true);
-          onGameOver(Math.floor(gameState.current.distance));
-          triggerCommentary('death');
+          // Phase shift — invincibility lets the player pass through.
+          if (powerUpSystem.isInvincible) return;
+
+          // Hurt animation window — additional collisions inside this
+          // window are no-ops so wide / multi-obstacle hits only cost
+          // one life. The hurt sprite (NOR-259) will eventually drive
+          // this duration; for now we use a fixed HURT_IFRAME_MS.
+          if (timestamp < gameState.current.iFramesUntil) return;
+
+          gameState.current.lives -= 1;
+          gameState.current.iFramesUntil = timestamp + HURT_IFRAME_MS;
+          setLives(gameState.current.lives);
+
+          if (gameState.current.lives <= 0) {
+            gameState.current.gameOver = true;
+            setIsGameOver(true);
+            onGameOver(Math.floor(gameState.current.distance));
+            triggerCommentary('death');
+          }
         }
       });
 
-      gameState.current.obstacles = gameState.current.obstacles.filter(obs => obs.x + obs.width > 0);
+      // Filter out off-screen and fireball-destroyed obstacles in one pass.
+      gameState.current.obstacles = gameState.current.obstacles.filter(
+        (obs) => !obs.destroyed && obs.x + obs.width > 0,
+      );
 
       // AI Commentary Triggers
       const currentMilestone = Math.floor(gameState.current.distance / 500);
@@ -410,20 +546,40 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       ctx.fillRect(0, ground, canvas.width, GROUND_HEIGHT);
 
       // Player
-      ctx.fillStyle = '#00ffcc';
-      ctx.shadowBlur = 15;
-      ctx.shadowColor = '#00ffcc';
+      // Visual states (TODO NOR-260: replace this with the layered aura
+      // from GDD Section 16 once invincibility lands its real visual):
+      //   - invincible → ~8Hz alpha flicker, cyan tint
+      //   - i-frames active → faster flicker (hurt animation stand-in)
+      const invincibleNow = powerUpSystem.isInvincible;
+      const inIFrames = timestamp < gameState.current.iFramesUntil;
+      let playerAlpha = 1;
+      if (invincibleNow) {
+        playerAlpha = 0.55 + 0.45 * Math.sin(timestamp * 0.05); // ~8 Hz
+      } else if (inIFrames) {
+        playerAlpha = 0.3 + 0.6 * Math.abs(Math.sin(timestamp * 0.04)); // hurt flash
+      }
+      ctx.globalAlpha = playerAlpha;
+      ctx.fillStyle = invincibleNow ? '#80ffff' : '#00ffcc';
+      ctx.shadowBlur = invincibleNow ? 25 : 15;
+      ctx.shadowColor = invincibleNow ? '#80ffff' : '#00ffcc';
       ctx.fillRect(PLAYER_X, gameState.current.player.y, PLAYER_WIDTH, PLAYER_HEIGHT);
       ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
 
       // Obstacles
       ctx.fillStyle = '#ff0055';
       ctx.shadowBlur = 10;
       ctx.shadowColor = '#ff0055';
       gameState.current.obstacles.forEach(obs => {
+        if (obs.destroyed) return;
         ctx.fillRect(obs.x, ground - obs.height, obs.width, obs.height);
       });
       ctx.shadowBlur = 0;
+
+      // Power-up render layer — fireballs first (so they sit above obstacles
+      // but below the chaos overlays), then HUD timers in the top-right.
+      powerUpSystem.drawFireballs(ctx);
+      powerUpSystem.drawHUD(ctx, canvas.width);
 
       // ─── Chaos draw layer ───────────────────────────────────────────────
       // Red edge pulse during the last second of the warning sequence (T-1s).
@@ -502,10 +658,36 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       setTimeout(() => setCommentary(null), 4000);
     };
 
+    // Power-up card selection callback. PowerUpSystem.apply mutates the
+    // passed state object in-place, so we construct one, call apply, then
+    // sync any mutations back to the canonical gameState ref + React state.
+    const onChoice = (id: PowerUpId) => {
+      const stateForApply = {
+        lives: gameState.current.lives,
+        canvasW: canvas.width,
+        playerY: gameState.current.player.y,
+      };
+      powerUpSystem.apply(id, stateForApply);
+
+      if (stateForApply.lives !== gameState.current.lives) {
+        gameState.current.lives = stateForApply.lives;
+        setLives(stateForApply.lives);
+      }
+
+      // GDD Section 16: "Player popped invincibility during warning window"
+      // Gemini commentary fires if the player picks Iron Skin while a chaos
+      // warning is active. The 'used shield on warning' string is in the
+      // rate-limit bypass set so it always fires.
+      if (id === 'invincible' && chaosState.current.phase === 'warning') {
+        triggerCommentary('used shield on warning');
+      }
+    };
+
     requestAnimationFrame(loop);
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      canvas.removeEventListener('click', handleCanvasClick);
       canvas.removeEventListener('touchstart', handleTouch);
       observer.disconnect();
       cancelAnimationFrame(animationFrameId);
@@ -516,11 +698,32 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
   }, [onGameOver]);
 
   return (
-    <div className="relative w-full max-w-4xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer" onClick={jump}>
+    <div className="relative w-full max-w-4xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer">
+      {/* Canvas owns its own click + touch listeners (set up inside the
+          effect) so it can route taps to the power-up card overlay when
+          one is showing instead of always firing jump. */}
       <canvas ref={canvasRef} className="w-full h-full" />
 
-      <div className="absolute top-4 left-4 font-arcade text-cyan-400 text-xl neon-text bg-black/60 border border-cyan-500/60 rounded px-3 py-1">
-        SCORE: {score}
+      <div className="absolute top-4 left-4 flex flex-col gap-2 items-start">
+        <div className="font-arcade text-cyan-400 text-xl neon-text bg-black/60 border border-cyan-500/60 rounded px-3 py-1">
+          SCORE: {score}
+        </div>
+        {/* Hearts HUD — one filled heart per remaining life. Empty outline
+            slots for missing lives so the player can read damage at a glance. */}
+        <div className="flex gap-1.5 px-1" aria-label={`${lives} lives remaining`}>
+          {Array.from({ length: STARTING_LIVES }).map((_, i) => (
+            <span
+              key={i}
+              className={
+                i < lives
+                  ? 'text-pink-500 text-lg drop-shadow-[0_0_6px_rgba(236,72,153,0.9)]'
+                  : 'text-pink-500/25 text-lg'
+              }
+            >
+              ♥
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* Chaos event warning banner — slides in from top of canvas at T-3s. */}
