@@ -10,3 +10,22 @@ updates:
         patterns: ["@nomicfoundation/*", "hardhat"]
       nextjs:
         patterns: ["next", "eslint-config-next"]
+ignore:
+  # wagmi major bumps break the onchainkit 1.x peer dep. Keep on 2.x
+  # until there's an onchainkit release that supports wagmi 3.x.
+  # See PR #34 for the revert. Revisit when NOR-258-adjacent.
+  - dependency-name: "wagmi"
+    update-types: ["version-update:semver-major"]
+
+  # eslint 10 is stuck here because eslint-config-next@16 bundles an
+  # incompatible eslint-plugin-react. Don't let Dependabot propose
+  # eslint 11+ until NOR-257 is fixed.
+  - dependency-name: "eslint"
+    update-types: ["version-update:semver-major"]
+
+  # @coinbase/onchainkit is currently at 1.1.2 (the latest). If/when
+  # v2 ships with wagmi v3 support, we want to re-evaluate wagmi at
+  # the same time — not auto-merge onchainkit in isolation.
+  - dependency-name: "@coinbase/onchainkit"
+    update-types: ["version-update:semver-major"]
+
