@@ -1,10 +1,11 @@
-// TODO: Not yet wired into Game.tsx. This is a complete power-up system
-// ready to integrate — see usage comments at the bottom of this file.
-//
 // ============================================================
 // PowerUpSystem.ts  —  /lib/PowerUpSystem.ts
 // Vampire Survivors-style power-up pause + selection
 // No engine required — pure canvas + game state flags
+//
+// Wired into components/Game.tsx. The wallet inventory hook
+// (setOwnedFromNFTs) is currently stubbed in Game.tsx with all
+// four power-ups owned until ConsumableItems.sol lands (NOR-209).
 // ============================================================
 
 // ─── Types ───────────────────────────────────────────────────
@@ -193,8 +194,12 @@ export class PowerUpSystem {
 
       case "invincible":
       case "timeslow":
-        // Remove existing instance of same effect first
-        this.activeEffects = this.activeEffects.filter((e) => e.id !== id);
+        // Timed effects are mutually exclusive per design — applying any
+        // timed effect replaces any other timed effect. Player always gets
+        // what they picked from the milestone card.
+        this.activeEffects = this.activeEffects.filter(
+          (e) => e.id !== "invincible" && e.id !== "timeslow",
+        );
         this.activeEffects.push({ id, expiresAt: now + (def.duration ?? 0) });
         break;
 
