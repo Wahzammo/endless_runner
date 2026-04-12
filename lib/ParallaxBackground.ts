@@ -30,11 +30,12 @@ class ParallaxLayer {
     this.img.src = config.src;
   }
 
-  /** deltaTime in ms, gameSpeed in px/ms */
-  update(deltaTime: number, gameSpeed: number) {
+  /** gameSpeed in px/frame — matches the rest of the game loop.
+   *  deltaTime kept in the signature for future frame-rate-independent rewrites. */
+  update(_deltaTime: number, gameSpeed: number) {
     if (!this.loaded) return;
 
-    const scrollAmount = gameSpeed * this.config.speedFactor * deltaTime;
+    const scrollAmount = gameSpeed * this.config.speedFactor;
     this.x -= scrollAmount;
 
     // When copy A has fully exited left, reset — copy B snaps into A's old slot
@@ -138,7 +139,7 @@ function gameLoop(timestamp: number) {
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // gameSpeed is your existing speed variable (px/ms)
+  // gameSpeed is your existing speed variable (px/frame — matches obstacle scrolling)
   // When timeslow is active, pass gameSpeed * 0.5
   const speed = gameSpeed * powerUps.update(deltaTime);
 

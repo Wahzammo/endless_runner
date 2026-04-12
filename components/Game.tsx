@@ -698,7 +698,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
   }, [onGameOver]);
 
   return (
-    <div className="relative w-full max-w-4xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer">
+    <div className="relative w-full max-w-6xl mx-auto aspect-video bg-black border-4 border-cyan-500 overflow-hidden cursor-pointer">
       {/* Canvas owns its own click + touch listeners (set up inside the
           effect) so it can route taps to the power-up card overlay when
           one is showing instead of always firing jump. */}
