@@ -1,6 +1,6 @@
-// TODO: Not yet wired into Game.tsx. References NEXT_PUBLIC_POWER_UP_NFT_ADDRESS
-// which does not exist yet — needs the power-up NFT contract to be deployed first.
-// Wire this in alongside PowerUpSystem.ts when the NFT contract is ready.
+// Session key + burn-on-use integration for ConsumableItems.sol (NOR-209).
+// Wired into Game.tsx via the onChoice callback and the startGame flow.
+// Requires NEXT_PUBLIC_POWER_UP_NFT_ADDRESS in .env.local.
 //
 // ============================================================
 // SESSION KEY + BURN-ON-USE INTEGRATION
@@ -20,12 +20,12 @@ import {
   createWalletClient,
   createPublicClient,
   http,
-  parseAbi,
   type WalletClient,
   type Address,
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
+import { CONSUMABLE_ITEMS_ABI, CONSUMABLE_ITEMS_ADDRESS } from "./contract";
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -34,14 +34,6 @@ export interface GameSession {
   expiresAt: number;         // Date.now() ms
   callsRemaining: number;
 }
-
-const POWER_UP_NFT_ADDRESS = process.env
-  .NEXT_PUBLIC_POWER_UP_NFT_ADDRESS as Address;
-
-const POWER_UP_ABI = parseAbi([
-  "function useAndBurn(uint256 tokenId) external",
-  "function getOwnedPowerUps(address player) external view returns (uint256[])",
-]);
 
 // ─── SessionManager ──────────────────────────────────────────
 
@@ -87,9 +79,9 @@ export class SessionManager {
             {
               type: "contract-call",
               data: {
-                address: POWER_UP_NFT_ADDRESS,
+                address: CONSUMABLE_ITEMS_ADDRESS!,
                 // Restrict to useAndBurn only — no other contract calls
-                abi: POWER_UP_ABI,
+                abi: CONSUMABLE_ITEMS_ABI,
                 functionName: "useAndBurn",
               },
             },
@@ -168,8 +160,8 @@ export class SessionManager {
       const hash = await this.sessionWallet.writeContract({
         chain: baseSepolia,
         account: this.sessionWallet.account!,
-        address: POWER_UP_NFT_ADDRESS,
-        abi: POWER_UP_ABI,
+        address: CONSUMABLE_ITEMS_ADDRESS!,
+        abi: CONSUMABLE_ITEMS_ABI,
         functionName: "useAndBurn",
         args: [BigInt(tokenId)],
       });
@@ -192,8 +184,8 @@ export class SessionManager {
 
   async getOwnedPowerUps(playerAddress: Address): Promise<number[]> {
     const result = await this.publicClient.readContract({
-      address: POWER_UP_NFT_ADDRESS,
-      abi: POWER_UP_ABI,
+      address: CONSUMABLE_ITEMS_ADDRESS!,
+      abi: CONSUMABLE_ITEMS_ABI,
       functionName: "getOwnedPowerUps",
       args: [playerAddress],
     });

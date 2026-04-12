@@ -215,6 +215,30 @@ export class PowerUpSystem {
     }
   }
 
+  // ── Rollback (if burn-on-use fails) ─────────────────────────
+
+  /**
+   * Reverse an optimistically-applied effect when the on-chain burn
+   * fails. Called by GameSession.burnPowerUp's onFail callback.
+   */
+  reverseEffect(id: PowerUpId, gameState: { lives: number }) {
+    switch (id) {
+      case 'health':
+        gameState.lives = Math.max(0, gameState.lives - 1);
+        break;
+      case 'invincible':
+      case 'timeslow':
+        this.activeEffects = this.activeEffects.filter(e => e.id !== id);
+        break;
+      case 'fireball':
+        // Remove the most recently added fireball
+        if (this.fireballs.length > 0) {
+          this.fireballs.pop();
+        }
+        break;
+    }
+  }
+
   // ── Per-tick Update ─────────────────────────────────────────
 
   /** Returns current speed multiplier (1 = normal, 0.5 = slowed) */

@@ -17,6 +17,12 @@ import {
   type Pattern,
 } from '@/lib/procgen';
 import { PowerUpSystem, type PowerUpId } from '@/lib/PowerUpSystem';
+import { gameSession } from '@/lib/GameSession';
+import {
+  CONSUMABLE_ITEMS_ADDRESS,
+  POWERUP_TO_TOKEN_ID,
+  TOKEN_ID_TO_POWERUP,
+} from '@/lib/contract';
 
 // Game constants
 const GROUND_HEIGHT = 40;
@@ -43,9 +49,11 @@ const CHAOS_BAR_REFILL_FLASH_MS = 500;
 interface GameProps {
   onGameOver: (score: number) => void;
   isPaused: boolean;
+  /** Connected wallet address — enables on-chain inventory reads + mints. */
+  playerAddress?: `0x${string}`;
 }
 
-export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
+export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [score, setScore] = useState(0);
   const [commentary, setCommentary] = useState<string | null>(null);
@@ -158,12 +166,28 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     lastCommentaryTime.current = 0;
 
     // ─── Power-up system ────────────────────────────────────────────────
-    // Fresh instance per mount. Wallet inventory is currently stubbed —
-    // grant all four power-ups until ConsumableItems.sol (NOR-209) lands
-    // and Game.tsx can read real ownership from the player's wallet.
     const powerUpSystem = new PowerUpSystem();
-    powerUpSystem.setOwnedFromNFTs(['health', 'invincible', 'timeslow', 'fireball']);
     powerUpSystemRef.current = powerUpSystem;
+
+    // Load wallet inventory if the contract is deployed and player is
+    // connected. Falls back to granting all four power-ups when the
+    // contract isn't configured (local dev / testnet without deploy).
+    if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
+      gameSession
+        .getOwnedPowerUps(playerAddress)
+        .then((tokenIds) => {
+          const owned = tokenIds
+            .map((id) => TOKEN_ID_TO_POWERUP[id as keyof typeof TOKEN_ID_TO_POWERUP])
+            .filter(Boolean) as PowerUpId[];
+          powerUpSystem.setOwnedFromNFTs(owned.length > 0 ? owned : ['health', 'invincible', 'timeslow', 'fireball']);
+        })
+        .catch(() => {
+          // Contract not deployed or read failed — fall back to all owned
+          powerUpSystem.setOwnedFromNFTs(['health', 'invincible', 'timeslow', 'fireball']);
+        });
+    } else {
+      powerUpSystem.setOwnedFromNFTs(['health', 'invincible', 'timeslow', 'fireball']);
+    }
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
@@ -661,6 +685,11 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
     // Power-up card selection callback. PowerUpSystem.apply mutates the
     // passed state object in-place, so we construct one, call apply, then
     // sync any mutations back to the canonical gameState ref + React state.
+    //
+    // On-chain integration (NOR-209): after applying the effect, mint the
+    // selected item to the player's wallet in the background. The item
+    // persists across runs — burn-on-use from the pre-run loadout (NOR-212)
+    // will activate the session key burn flow in GameSession.ts.
     const onChoice = (id: PowerUpId) => {
       const stateForApply = {
         lives: gameState.current.lives,
@@ -680,6 +709,22 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused }) => {
       // rate-limit bypass set so it always fires.
       if (id === 'invincible' && chaosState.current.phase === 'warning') {
         triggerCommentary('used shield on warning');
+      }
+
+      // Mint the selected item to the player's wallet (fire-and-forget).
+      // The item persists in the wallet for future runs. If the mint fails
+      // the player still gets the immediate effect — it's a free reward.
+      if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
+        fetch('/api/mint-powerup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            playerAddress,
+            tokenId: POWERUP_TO_TOKEN_ID[id],
+          }),
+        }).catch(() => {
+          // Mint failed silently — player keeps the immediate effect
+        });
       }
     };
 
