@@ -10,7 +10,7 @@ import Link from 'next/link';
 import { ONCHAIN_ARCADE_ABI, ONCHAIN_ARCADE_ADDRESS } from '@/lib/contract';
 
 export default function Home() {
-  const { isConnected } = useAccount();
+  const { isConnected, address } = useAccount();
   const [gameState, setGameState] = useState<'start' | 'playing' | 'gameover'>('start');
   const [finalScore, setFinalScore] = useState(0);
   const [gameKey, setGameKey] = useState(0);
@@ -102,7 +102,7 @@ export default function Home() {
               className="w-full"
             >
               <GameErrorBoundary onReset={startGame}>
-                <Game key={gameKey} onGameOver={handleGameOver} isPaused={paused} />
+                <Game key={gameKey} onGameOver={handleGameOver} isPaused={paused} playerAddress={address} />
               </GameErrorBoundary>
             </motion.div>
           )}

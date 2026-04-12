@@ -1,7 +1,7 @@
 import "@nomicfoundation/hardhat-toolbox-viem";
+import type { HardhatUserConfig } from "hardhat/config";
 
-/** @type {import('hardhat/config').HardhatUserConfig} */
-const config = {
+const config: HardhatUserConfig = {
   solidity: "0.8.20",
   paths: {
     sources: "./contracts",
