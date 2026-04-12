@@ -169,31 +169,77 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
     const powerUpSystem = new PowerUpSystem();
     powerUpSystemRef.current = powerUpSystem;
 
-    // Load wallet inventory if the contract is deployed and player is
-    // connected. Falls back to granting all four power-ups when the
+    // Load wallet inventory counts if the contract is deployed and
+    // player is connected. Falls back to granting 1 of each when the
     // contract isn't configured (local dev / testnet without deploy).
     if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
       gameSession
-        .getOwnedPowerUps(playerAddress)
-        .then((tokenIds) => {
-          const owned = tokenIds
-            .map((id) => TOKEN_ID_TO_POWERUP[id as keyof typeof TOKEN_ID_TO_POWERUP])
-            .filter(Boolean) as PowerUpId[];
-          powerUpSystem.setOwnedFromNFTs(owned.length > 0 ? owned : ['health', 'invincible', 'timeslow', 'fireball']);
+        .getInventoryCounts(playerAddress)
+        .then((counts) => {
+          const inventory = new Map<PowerUpId, number>();
+          for (const [tokenId, count] of counts) {
+            const id = TOKEN_ID_TO_POWERUP[tokenId as keyof typeof TOKEN_ID_TO_POWERUP];
+            if (id) inventory.set(id, count);
+          }
+          powerUpSystem.setInventory(inventory);
         })
         .catch(() => {
-          // Contract not deployed or read failed — fall back to all owned
-          powerUpSystem.setOwnedFromNFTs(['health', 'invincible', 'timeslow', 'fireball']);
+          // Contract not deployed or read failed — fall back to 1 of each
+          const fallback = new Map<PowerUpId, number>([
+            ['health', 1], ['invincible', 1], ['timeslow', 1], ['fireball', 1],
+          ]);
+          powerUpSystem.setInventory(fallback);
         });
     } else {
-      powerUpSystem.setOwnedFromNFTs(['health', 'invincible', 'timeslow', 'fireball']);
+      const fallback = new Map<PowerUpId, number>([
+        ['health', 1], ['invincible', 1], ['timeslow', 1], ['fireball', 1],
+      ]);
+      powerUpSystem.setInventory(fallback);
     }
+
+    // Activate a consumable from the action bar — burn + apply effect.
+    const useConsumable = (slot: number) => {
+      if (gameState.current.gameOver) return;
+      if (powerUpSystem.isPaused) return; // can't use during card selection
+
+      const id = powerUpSystem.getSlotId(slot);
+      if (!id) return;
+
+      const stateForApply = {
+        lives: gameState.current.lives,
+        canvasW: canvas.width,
+        playerY: gameState.current.player.y,
+      };
+
+      const used = powerUpSystem.useFromInventory(id, stateForApply);
+      if (!used) return; // inventory empty
+
+      // Sync lives back to React state
+      if (stateForApply.lives !== gameState.current.lives) {
+        gameState.current.lives = stateForApply.lives;
+        setLives(stateForApply.lives);
+      }
+
+      // Burn the NFT from the wallet in the background (fire-and-forget).
+      // If burn fails, the item was already used — acceptable on testnet.
+      if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
+        const tokenId = POWERUP_TO_TOKEN_ID[id];
+        gameSession.burnPowerUp(tokenId).catch(() => {
+          // Burn failed silently — player keeps the effect
+        });
+      }
+    };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         e.preventDefault();
         jump();
       }
+      // Action bar: keys 1-4 activate consumables
+      if (e.code === 'Digit1') useConsumable(1);
+      if (e.code === 'Digit2') useConsumable(2);
+      if (e.code === 'Digit3') useConsumable(3);
+      if (e.code === 'Digit4') useConsumable(4);
     };
     window.addEventListener('keydown', handleKeyDown);
 
@@ -604,6 +650,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
       // but below the chaos overlays), then HUD timers in the top-right.
       powerUpSystem.drawFireballs(ctx);
       powerUpSystem.drawHUD(ctx, canvas.width);
+      powerUpSystem.drawActionBar(ctx, canvas.width, canvas.height);
 
       // ─── Chaos draw layer ───────────────────────────────────────────────
       // Red edge pulse during the last second of the warning sequence (T-1s).
@@ -682,38 +729,15 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
       setTimeout(() => setCommentary(null), 4000);
     };
 
-    // Power-up card selection callback. PowerUpSystem.apply mutates the
-    // passed state object in-place, so we construct one, call apply, then
-    // sync any mutations back to the canonical gameState ref + React state.
-    //
-    // On-chain integration (NOR-209): after applying the effect, mint the
-    // selected item to the player's wallet in the background. The item
-    // persists across runs — burn-on-use from the pre-run loadout (NOR-212)
-    // will activate the session key burn flow in GameSession.ts.
+    // Power-up card selection callback — CLAIM ONLY, no immediate effect.
+    // The selected item is minted to the player's wallet and added to the
+    // local inventory. The player activates it later via the action bar
+    // (keys 1-4), which burns the NFT and applies the effect.
     const onChoice = (id: PowerUpId) => {
-      const stateForApply = {
-        lives: gameState.current.lives,
-        canvasW: canvas.width,
-        playerY: gameState.current.player.y,
-      };
-      powerUpSystem.apply(id, stateForApply);
+      // Add to local inventory immediately (optimistic)
+      powerUpSystem.addToInventory(id);
 
-      if (stateForApply.lives !== gameState.current.lives) {
-        gameState.current.lives = stateForApply.lives;
-        setLives(stateForApply.lives);
-      }
-
-      // GDD Section 16: "Player popped invincibility during warning window"
-      // Gemini commentary fires if the player picks Iron Skin while a chaos
-      // warning is active. The 'used shield on warning' string is in the
-      // rate-limit bypass set so it always fires.
-      if (id === 'invincible' && chaosState.current.phase === 'warning') {
-        triggerCommentary('used shield on warning');
-      }
-
-      // Mint the selected item to the player's wallet (fire-and-forget).
-      // The item persists in the wallet for future runs. If the mint fails
-      // the player still gets the immediate effect — it's a free reward.
+      // Mint the item to the player's wallet in the background.
       if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
         fetch('/api/mint-powerup', {
           method: 'POST',
@@ -723,7 +747,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
             tokenId: POWERUP_TO_TOKEN_ID[id],
           }),
         }).catch(() => {
-          // Mint failed silently — player keeps the immediate effect
+          // Mint failed — item still in local inventory for this run
         });
       }
     };

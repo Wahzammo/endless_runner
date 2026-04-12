@@ -1,11 +1,12 @@
 // ============================================================
 // PowerUpSystem.ts  —  /lib/PowerUpSystem.ts
-// Vampire Survivors-style power-up pause + selection
+// Vampire Survivors-style power-up pause + selection + action bar
 // No engine required — pure canvas + game state flags
 //
-// Wired into components/Game.tsx. The wallet inventory hook
-// (setOwnedFromNFTs) is currently stubbed in Game.tsx with all
-// four power-ups owned until ConsumableItems.sol lands (NOR-209).
+// Flow:
+//   1. Milestone pause → player picks a card → item minted to wallet
+//   2. Item appears in the action bar (keys 1-4)
+//   3. Player presses key → item activated (effect applies) + burned
 // ============================================================
 
 // ─── Types ───────────────────────────────────────────────────
@@ -69,9 +70,14 @@ export const POWER_UP_DEFS: Record<PowerUpId, PowerUpDef> = {
   },
 };
 
+// Action bar slot order — maps key 1-4 to power-up types
+const ACTION_BAR_SLOTS: PowerUpId[] = ["health", "invincible", "timeslow", "fireball"];
+
 // ─── PowerUpSystem ───────────────────────────────────────────
 
 export class PowerUpSystem {
+  // Consumable inventory — how many of each item the player has available
+  private inventory: Map<PowerUpId, number> = new Map();
   // Which power-up NFTs the player holds (loaded from wallet on game start)
   private ownedIds: Set<PowerUpId> = new Set();
   // Currently active timed effects
@@ -90,7 +96,53 @@ export class PowerUpSystem {
   // Card layout (computed once per show)
   private cards: Array<{ x: number; y: number; w: number; h: number; def: PowerUpDef }> = [];
 
-  // ── Owned NFTs ──────────────────────────────────────────────
+  // ── Inventory ───────────────────────────────────────────────
+
+  /** Set inventory counts from wallet balances (called on game start). */
+  setInventory(counts: Map<PowerUpId, number>) {
+    this.inventory = new Map(counts);
+    // Keep ownedIds in sync for card badge rendering
+    this.ownedIds = new Set<PowerUpId>();
+    for (const [id, count] of counts) {
+      if (count > 0) this.ownedIds.add(id);
+    }
+  }
+
+  /** Add one item to inventory (called after milestone claim / mint). */
+  addToInventory(id: PowerUpId, count = 1) {
+    this.inventory.set(id, (this.inventory.get(id) ?? 0) + count);
+    this.ownedIds.add(id);
+  }
+
+  /** Get count of a specific item. */
+  getCount(id: PowerUpId): number {
+    return this.inventory.get(id) ?? 0;
+  }
+
+  /** Get the PowerUpId for a given action bar slot (1-indexed). */
+  getSlotId(slot: number): PowerUpId | undefined {
+    return ACTION_BAR_SLOTS[slot - 1];
+  }
+
+  /**
+   * Use one item from inventory — decrements count + applies effect.
+   * Returns true if the item was used, false if inventory was empty.
+   */
+  useFromInventory(
+    id: PowerUpId,
+    gameState: { lives: number; canvasW: number; playerY: number },
+  ): boolean {
+    const count = this.inventory.get(id) ?? 0;
+    if (count <= 0) return false;
+
+    this.inventory.set(id, count - 1);
+    if (count - 1 <= 0) this.ownedIds.delete(id);
+
+    this.apply(id, gameState);
+    return true;
+  }
+
+  // ── Owned NFTs (legacy compat) ─────────────────────────────
 
   /** Call on game init — pass NFT token IDs read from wallet */
   setOwnedFromNFTs(tokenIds: PowerUpId[]) {
@@ -421,6 +473,59 @@ export class PowerUpSystem {
       ctx.textAlign = "right";
       ctx.fillText(`${def.icon} ${def.name} ${secs}s`, canvasW - 12, offsetY);
       offsetY += 18;
+    }
+  }
+
+  /** Draw the action bar — 4 slots at bottom-center showing inventory. */
+  drawActionBar(ctx: CanvasRenderingContext2D, canvasW: number, canvasH: number) {
+    const slotW = 56;
+    const slotH = 48;
+    const gap = 8;
+    const totalW = ACTION_BAR_SLOTS.length * slotW + (ACTION_BAR_SLOTS.length - 1) * gap;
+    const startX = (canvasW - totalW) / 2;
+    const y = canvasH - slotH - 52; // above the ground strip
+    const r = 6;
+
+    for (let i = 0; i < ACTION_BAR_SLOTS.length; i++) {
+      const id = ACTION_BAR_SLOTS[i];
+      const def = POWER_UP_DEFS[id];
+      const count = this.getCount(id);
+      const x = startX + i * (slotW + gap);
+      const hasItem = count > 0;
+
+      // Slot background
+      ctx.fillStyle = hasItem ? 'rgba(26, 26, 46, 0.85)' : 'rgba(10, 10, 20, 0.5)';
+      ctx.beginPath();
+      ctx.roundRect(x, y, slotW, slotH, r);
+      ctx.fill();
+
+      // Border — accent color if available, dim if empty
+      ctx.strokeStyle = hasItem ? def.color : 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = hasItem ? 2 : 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, slotW, slotH, r);
+      ctx.stroke();
+
+      // Key number badge (top-left corner)
+      ctx.fillStyle = hasItem ? '#ffffff' : 'rgba(255,255,255,0.3)';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(`${i + 1}`, x + 5, y + 12);
+
+      // Icon (centered)
+      ctx.globalAlpha = hasItem ? 1 : 0.3;
+      ctx.font = `${Math.round(slotW * 0.38)}px serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(def.icon, x + slotW / 2, y + slotH * 0.65);
+      ctx.globalAlpha = 1;
+
+      // Count badge (bottom-right corner) — only if > 0
+      if (count > 0) {
+        ctx.fillStyle = def.color;
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`×${count}`, x + slotW - 4, y + slotH - 5);
+      }
     }
   }
 }
