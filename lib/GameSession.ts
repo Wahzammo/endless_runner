@@ -191,6 +191,28 @@ export class SessionManager {
     });
     return (result as bigint[]).map(Number);
   }
+
+  /** Get exact inventory counts for all 4 item types via balanceOfBatch. */
+  async getInventoryCounts(
+    playerAddress: Address,
+  ): Promise<Map<number, number>> {
+    const tokenIds = [BigInt(0), BigInt(1), BigInt(2), BigInt(3)];
+    const accounts = tokenIds.map(() => playerAddress);
+
+    const result = await this.publicClient.readContract({
+      address: CONSUMABLE_ITEMS_ADDRESS!,
+      abi: CONSUMABLE_ITEMS_ABI,
+      functionName: "balanceOfBatch",
+      args: [accounts, tokenIds],
+    });
+
+    const counts = new Map<number, number>();
+    const balances = result as bigint[];
+    for (let i = 0; i < balances.length; i++) {
+      counts.set(i, Number(balances[i]));
+    }
+    return counts;
+  }
 }
 
 // ─── Singleton export ─────────────────────────────────────────
