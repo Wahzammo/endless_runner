@@ -8,6 +8,7 @@ import { useAccount, useWriteContract } from 'wagmi';
 import { motion, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
 import { ONCHAIN_ARCADE_ABI, ONCHAIN_ARCADE_ADDRESS } from '@/lib/contract';
+import { startSession, endSession } from '@/lib/GameSession';
 
 export default function Home() {
   const { isConnected, address } = useAccount();
@@ -15,11 +16,23 @@ export default function Home() {
   const [finalScore, setFinalScore] = useState(0);
   const [gameKey, setGameKey] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [subAccountAddr, setSubAccountAddr] = useState<`0x${string}` | undefined>();
 
   const { writeContract, isPending: isSubmitting, isSuccess: isSubmitted, isError: submitError } = useWriteContract();
 
-  const startGame = useCallback(() => {
+  const startGame = useCallback(async () => {
     if (!isConnected) return;
+
+    // Initialize Sub Account session — one popup on first-ever connect,
+    // zero popups on subsequent plays in the same browser.
+    try {
+      const { subAccount } = await startSession();
+      setSubAccountAddr(subAccount);
+    } catch (err) {
+      console.error('Sub Account session failed:', err);
+      // Game still playable without Sub Account — mints/burns just won't work
+    }
+
     setGameKey(k => k + 1);
     setPaused(false);
     setGameState('playing');
@@ -38,6 +51,7 @@ export default function Home() {
   const handleGameOver = (score: number) => {
     setFinalScore(score);
     setGameState('gameover');
+    endSession();
   };
 
   const handleSubmitScore = () => {
@@ -102,7 +116,13 @@ export default function Home() {
               className="w-full"
             >
               <GameErrorBoundary onReset={startGame}>
-                <Game key={gameKey} onGameOver={handleGameOver} isPaused={paused} playerAddress={address} />
+                <Game
+                  key={gameKey}
+                  onGameOver={handleGameOver}
+                  isPaused={paused}
+                  playerAddress={address}
+                  subAccountAddress={subAccountAddr}
+                />
               </GameErrorBoundary>
             </motion.div>
           )}
