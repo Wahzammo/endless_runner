@@ -257,7 +257,7 @@ export class PowerUpSystem {
 
       case "fireball":
         this.fireballs.push({
-          x: gameState.canvasW * 0.2, // player's approximate x
+          x: gameState.canvasW * 0.3, // matches PLAYER_X_FRACTION
           y: gameState.playerY,
           vx: 0.6,                    // px/ms — adjust to taste
           radius: 10,

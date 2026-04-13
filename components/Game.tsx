@@ -26,7 +26,8 @@ import {
 
 // Game constants
 const GROUND_HEIGHT = 40;
-const PLAYER_X = 50;
+// Player X position is ~30% of canvas width (computed dynamically on resize)
+const PLAYER_X_FRACTION = 0.3;
 
 // ─── Player HP / hurt window ────────────────────────────────────────────────
 const STARTING_LIVES = 3;
@@ -127,9 +128,11 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
     if (!ctx) return;
 
     // Size canvas to container
+    let playerX = 50; // recalculated on resize
     const resizeCanvas = () => {
       canvas.width = canvas.offsetWidth;
       canvas.height = canvas.offsetHeight;
+      playerX = Math.floor(canvas.width * PLAYER_X_FRACTION);
       bg.resize(canvas.width, canvas.height);
     };
 
@@ -565,8 +568,8 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
         const obsTop = ground - obs.height;
 
         if (
-          PLAYER_X < obs.x + obs.width &&
-          PLAYER_X + p.width > obs.x &&
+          playerX < obs.x + obs.width &&
+          playerX + p.width > obs.x &&
           p.y < obsTop + obs.height &&
           p.y + p.height > obsTop
         ) {
@@ -632,7 +635,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
       ctx.fillStyle = invincibleNow ? '#80ffff' : '#00ffcc';
       ctx.shadowBlur = invincibleNow ? 25 : 15;
       ctx.shadowColor = invincibleNow ? '#80ffff' : '#00ffcc';
-      ctx.fillRect(PLAYER_X, gameState.current.player.y, PLAYER_WIDTH, PLAYER_HEIGHT);
+      ctx.fillRect(playerX, gameState.current.player.y, PLAYER_WIDTH, PLAYER_HEIGHT);
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
 
@@ -818,9 +821,9 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
             initial={{ opacity: 0, y: 20, scale: 0.8 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, scale: 0.8 }}
-            className="absolute top-1/4 right-10 max-w-xs bg-black/75 backdrop-blur-sm text-cyan-300 border border-cyan-400 p-4 rounded-2xl rounded-tr-none font-arcade text-[10px] leading-relaxed shadow-[0_0_20px_rgba(34,211,238,0.5)]"
+            className="absolute top-1/4 left-10 max-w-xs bg-black/75 backdrop-blur-sm text-cyan-300 border border-cyan-400 p-4 rounded-2xl rounded-tl-none font-arcade text-[10px] leading-relaxed shadow-[0_0_20px_rgba(34,211,238,0.5)]"
           >
-            <div className="absolute -top-2 -right-2 w-4 h-4 bg-black border-t border-r border-cyan-400 rotate-45" />
+            <div className="absolute -top-2 -left-2 w-4 h-4 bg-black border-t border-l border-cyan-400 rotate-45" />
             {commentary}
           </motion.div>
         )}
