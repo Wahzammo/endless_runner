@@ -729,7 +729,7 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
           : type;
       const text = await generateCommentary(eventString, Math.floor(gameState.current.distance));
       setCommentary(text);
-      setTimeout(() => setCommentary(null), 4000);
+      setTimeout(() => setCommentary(null), 5500);
     };
 
     // Power-up card selection callback — CLAIM ONLY, no immediate effect.

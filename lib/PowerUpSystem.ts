@@ -483,7 +483,7 @@ export class PowerUpSystem {
     const gap = 8;
     const totalW = ACTION_BAR_SLOTS.length * slotW + (ACTION_BAR_SLOTS.length - 1) * gap;
     const startX = (canvasW - totalW) / 2;
-    const y = canvasH - slotH - 52; // above the ground strip
+    const y = 52; // same padding as before, but from the top
     const r = 6;
 
     for (let i = 0; i < ACTION_BAR_SLOTS.length; i++) {
