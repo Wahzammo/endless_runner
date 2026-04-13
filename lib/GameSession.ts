@@ -1,295 +1,178 @@
-// Session key + burn-on-use integration for ConsumableItems.sol (NOR-209).
-// Wired into Game.tsx via the onChoice callback and the startGame flow.
-// Requires NEXT_PUBLIC_POWER_UP_NFT_ADDRESS in .env.local.
-//
 // ============================================================
-// SESSION KEY + BURN-ON-USE INTEGRATION
-// /lib/GameSession.ts
+// GameSession.ts — Sub Account + CDP Paymaster integration
 //
-// Flow:
-//   1. Player connects wallet (existing OnchainKit)
-//   2. Game start → one popup: "Authorise game session"
-//      Session grants permission to call useAndBurn() only,
-//      capped to X calls, expires after Y minutes
-//   3. In-game power-up used → useAndBurn() via session key
-//      → silent, no popup, instant
-//   4. Server-side mint on claim is unchanged (server wallet)
+// Uses Base Account SDK's Sub Accounts for silent burn-on-use:
+//   1. Game start → SDK creates/retrieves a Sub Account (one popup
+//      on first ever connect, zero popups after)
+//   2. Server mints power-ups to the Sub Account address
+//   3. Keys 1-4 → wallet_sendCalls from Sub Account → useAndBurn()
+//      Gas sponsored by CDP Paymaster → no popup, no ETH needed
+//
+// The Sub Account persists across sessions (scoped to this app's
+// domain). Its address is stable — power-ups survive between runs.
 // ============================================================
 
+import { encodeFunctionData, createPublicClient, http, type Address } from 'viem';
+import { baseSepolia } from 'viem/chains';
+import { baseSDK } from '@/components/Providers';
 import {
-  createWalletClient,
-  createPublicClient,
-  http,
-  type WalletClient,
-  type Address,
-} from "viem";
-import { baseSepolia } from "viem/chains";
-import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
-import { CONSUMABLE_ITEMS_ABI, CONSUMABLE_ITEMS_ADDRESS } from "./contract";
+  CONSUMABLE_ITEMS_ABI,
+  CONSUMABLE_ITEMS_ADDRESS,
+  TOKEN_ID_TO_POWERUP,
+} from './contract';
+import type { PowerUpId } from './PowerUpSystem';
 
-// ─── Types ───────────────────────────────────────────────────
+// ─── State ──────────────────────────────────────────────────
 
-export interface GameSession {
-  sessionKey: Address;       // ephemeral key address (never stored server-side)
-  expiresAt: number;         // Date.now() ms
-  callsRemaining: number;
+let subAccountAddress: Address | null = null;
+let universalAddress: Address | null = null;
+
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(),
+});
+
+// ─── Session lifecycle ──────────────────────────────────────
+
+/**
+ * Start a game session — creates or retrieves the Sub Account.
+ * First-ever call triggers ONE wallet popup (Base Account connect +
+ * Sub Account creation). Subsequent calls in the same browser are
+ * silent because the Sub Account already exists.
+ */
+export async function startSession(): Promise<{
+  subAccount: Address;
+  universal: Address;
+}> {
+  const provider = baseSDK.getProvider();
+
+  // eth_requestAccounts triggers the connect popup on first use.
+  // With defaultAccount: 'sub', accounts[0] = sub, accounts[1] = universal.
+  const accounts = (await provider.request({
+    method: 'eth_requestAccounts',
+    params: [],
+  })) as Address[];
+
+  subAccountAddress = accounts[0];
+  universalAddress = accounts[1] ?? accounts[0];
+
+  if (!subAccountAddress) {
+    throw new Error('Failed to create or retrieve Sub Account');
+  }
+
+  return { subAccount: subAccountAddress, universal: universalAddress };
 }
 
-// ─── SessionManager ──────────────────────────────────────────
+/**
+ * Try to get the existing Sub Account without triggering a popup.
+ * Returns null if no Sub Account exists for this app yet.
+ */
+export async function getExistingSubAccount(): Promise<Address | null> {
+  try {
+    const sub = await baseSDK.subAccount.get();
+    if (sub?.address) {
+      subAccountAddress = sub.address as Address;
+      return subAccountAddress;
+    }
+  } catch {
+    // No sub account exists yet
+  }
+  return null;
+}
 
-export class SessionManager {
-  private sessionWallet: WalletClient | null = null;
-  private session: GameSession | null = null;
-  private publicClient = createPublicClient({
-    chain: baseSepolia,
-    transport: http(),
-  });
+/** Get the current Sub Account address (null if session not started). */
+export function getSubAccountAddress(): Address | null {
+  return subAccountAddress;
+}
 
-  // ── Create session ────────────────────────────────────────
-  //
-  // Coinbase Smart Wallet handles session key authorisation natively.
-  // This generates an ephemeral key, then requests the Smart Wallet
-  // to grant it permission to call useAndBurn() on the NFT contract.
-  //
-  // The player sees ONE popup at game start:
-  //   "Allow Base Runner to use your power-ups during this session?"
-  //   Limit: up to 10 transactions | Expires: 30 minutes
-  //
-  // After approval, all burns go through sessionWallet silently.
+/** Get the current Universal Account address. */
+export function getUniversalAddress(): Address | null {
+  return universalAddress;
+}
 
-  async createSession(smartWalletClient: WalletClient): Promise<GameSession> {
-    const ephemeralKey = generatePrivateKey();
-    const ephemeralAccount = privateKeyToAccount(ephemeralKey);
+/** Clear in-memory session state. Sub Account persists on-chain. */
+export function endSession() {
+  subAccountAddress = null;
+  universalAddress = null;
+}
 
-    this.sessionWallet = createWalletClient({
-      account: ephemeralAccount,
-      chain: baseSepolia,
-      transport: http(),
-    });
+// ─── Burn on use ────────────────────────────────────────────
 
-    // Request Smart Wallet to grant session permissions
-    // This uses Coinbase Smart Wallet's ERC-7715 session key standard
-    // which OnchainKit exposes via wallet_grantPermissions
-    await (smartWalletClient as any).request({
-      method: "wallet_grantPermissions",
-      params: [
-        {
-          signer: { type: "key", data: { id: ephemeralAccount.address } },
-          permissions: [
-            {
-              type: "contract-call",
-              data: {
-                address: CONSUMABLE_ITEMS_ADDRESS!,
-                // Restrict to useAndBurn only — no other contract calls
-                abi: CONSUMABLE_ITEMS_ABI,
-                functionName: "useAndBurn",
-              },
-            },
-          ],
-          // Session expires in 30 minutes
-          expiry: Math.floor(Date.now() / 1000) + 60 * 30,
+/**
+ * Burn a power-up NFT from the Sub Account — silent, no popup.
+ * Gas is sponsored by the CDP Paymaster.
+ *
+ * Called mid-game when the player presses keys 1-4. The game effect
+ * is already applied optimistically by PowerUpSystem.useFromInventory.
+ *
+ * @returns The wallet_sendCalls ID (for receipt polling if needed)
+ */
+export async function burnPowerUp(tokenId: number): Promise<string | null> {
+  if (!subAccountAddress || !CONSUMABLE_ITEMS_ADDRESS) return null;
+
+  try {
+    const provider = baseSDK.getProvider();
+
+    const callsId = (await provider.request({
+      method: 'wallet_sendCalls',
+      params: [{
+        version: '2.0',
+        chainId: `0x${baseSepolia.id.toString(16)}`,
+        from: subAccountAddress,
+        calls: [{
+          to: CONSUMABLE_ITEMS_ADDRESS,
+          data: encodeFunctionData({
+            abi: CONSUMABLE_ITEMS_ABI,
+            functionName: 'useAndBurn',
+            args: [BigInt(tokenId)],
+          }),
+          value: '0x0',
+        }],
+        capabilities: {
+          paymasterService: {
+            url: process.env.NEXT_PUBLIC_PAYMASTER_URL,
+          },
         },
-      ],
-    });
+      }],
+    })) as string;
 
-    this.session = {
-      sessionKey: ephemeralAccount.address,
-      expiresAt: Date.now() + 30 * 60 * 1000,
-      callsRemaining: 10, // generous cap for a gaming session
-    };
-
-    // Store ephemeral key in memory only — never persisted
-    // In production you may want sessionStorage (clears on tab close)
-    sessionStorage.setItem("_gameEphemeralKey", ephemeralKey);
-
-    return this.session;
+    return callsId;
+  } catch (err) {
+    console.error('Silent burn failed:', err);
+    return null;
   }
+}
 
-  // ── Restore session after page refresh ───────────────────
+// ─── Inventory reads ────────────────────────────────────────
 
-  restoreSession(): boolean {
-    const key = sessionStorage.getItem("_gameEphemeralKey");
-    if (!key || !this.session) return false;
-    if (Date.now() > this.session.expiresAt) {
-      this.clearSession();
-      return false;
-    }
-    const account = privateKeyToAccount(key as `0x${string}`);
-    this.sessionWallet = createWalletClient({
-      account,
-      chain: baseSepolia,
-      transport: http(),
-    });
-    return true;
-  }
+/**
+ * Get inventory counts for the Sub Account (or any address).
+ * Uses balanceOfBatch for a single RPC call.
+ */
+export async function getInventoryCounts(
+  playerAddress: Address,
+): Promise<Map<PowerUpId, number>> {
+  if (!CONSUMABLE_ITEMS_ADDRESS) return new Map();
 
-  clearSession() {
-    sessionStorage.removeItem("_gameEphemeralKey");
-    this.session = null;
-    this.sessionWallet = null;
-  }
-
-  get isActive(): boolean {
-    return (
-      !!this.session &&
-      Date.now() < this.session.expiresAt &&
-      this.session.callsRemaining > 0
-    );
-  }
-
-  // ── Burn on use ───────────────────────────────────────────
-  //
-  // Called the moment the player activates a power-up in-game.
-  // No popup — session key signs silently.
-  // Game effect applies immediately (optimistic). If burn reverts
-  // (e.g. they somehow ran out), we reverse the game effect.
-
-  async burnPowerUp(
-    tokenId: number,
-    onSuccess?: () => void,
-    onFail?: (reason: string) => void
-  ): Promise<void> {
-    if (!this.isActive || !this.sessionWallet) {
-      onFail?.("No active session — reconnect wallet");
-      return;
-    }
-
-    try {
-      this.session!.callsRemaining--;
-
-      const hash = await this.sessionWallet.writeContract({
-        chain: baseSepolia,
-        account: this.sessionWallet.account!,
-        address: CONSUMABLE_ITEMS_ADDRESS!,
-        abi: CONSUMABLE_ITEMS_ABI,
-        functionName: "useAndBurn",
-        args: [BigInt(tokenId)],
-      });
-
-      // Fire and forget — don't block the game loop waiting for receipt
-      this.publicClient
-        .waitForTransactionReceipt({ hash })
-        .then(() => onSuccess?.())
-        .catch((err) => {
-          this.session!.callsRemaining++; // restore on failure
-          onFail?.(err.message);
-        });
-    } catch (err: any) {
-      this.session!.callsRemaining++;
-      onFail?.(err.message);
-    }
-  }
-
-  // ── Load owned power-ups ──────────────────────────────────
-
-  async getOwnedPowerUps(playerAddress: Address): Promise<number[]> {
-    const result = await this.publicClient.readContract({
-      address: CONSUMABLE_ITEMS_ADDRESS!,
-      abi: CONSUMABLE_ITEMS_ABI,
-      functionName: "getOwnedPowerUps",
-      args: [playerAddress],
-    });
-    return (result as bigint[]).map(Number);
-  }
-
-  /** Get exact inventory counts for all 4 item types via balanceOfBatch. */
-  async getInventoryCounts(
-    playerAddress: Address,
-  ): Promise<Map<number, number>> {
+  try {
     const tokenIds = [BigInt(0), BigInt(1), BigInt(2), BigInt(3)];
     const accounts = tokenIds.map(() => playerAddress);
 
-    const result = await this.publicClient.readContract({
-      address: CONSUMABLE_ITEMS_ADDRESS!,
+    const result = await publicClient.readContract({
+      address: CONSUMABLE_ITEMS_ADDRESS,
       abi: CONSUMABLE_ITEMS_ABI,
-      functionName: "balanceOfBatch",
+      functionName: 'balanceOfBatch',
       args: [accounts, tokenIds],
     });
 
-    const counts = new Map<number, number>();
+    const counts = new Map<PowerUpId, number>();
     const balances = result as bigint[];
     for (let i = 0; i < balances.length; i++) {
-      counts.set(i, Number(balances[i]));
+      const id = TOKEN_ID_TO_POWERUP[i as keyof typeof TOKEN_ID_TO_POWERUP];
+      if (id) counts.set(id, Number(balances[i]));
     }
     return counts;
+  } catch {
+    return new Map();
   }
 }
-
-// ─── Singleton export ─────────────────────────────────────────
-export const gameSession = new SessionManager();
-
-
-// ============================================================
-// WIRING INTO Game.tsx — key changes only
-// ============================================================
-
-/*
-
-import { gameSession } from "@/lib/GameSession";
-import { useAccount, useWalletClient } from "wagmi";
-
-const { address } = useAccount();
-const { data: walletClient } = useWalletClient();
-
-// ── On "Start Game" button click ─────────────────────────────
-async function handleStartGame() {
-  // Load NFT inventory
-  const owned = await gameSession.getOwnedPowerUps(address!);
-  powerUps.setOwnedFromNFTs(owned.map(id => TOKEN_ID_TO_POWERUP[id]));
-
-  // Create session — ONE wallet popup here, nothing else during game
-  if (!gameSession.isActive) {
-    await gameSession.createSession(walletClient!);
-  }
-
-  startGameLoop();
-}
-
-// ── When player SELECTS a card (claim flow — unchanged) ──────
-// Server still mints the NFT via /api/mint-powerup
-// The power-up is added to their inventory
-
-// ── When player ACTIVATES a power-up mid-game ────────────────
-// This is the NEW burn flow. Apply effect optimistically,
-// burn confirms in background.
-
-function activatePowerUp(id: PowerUpId) {
-  const tokenId = POWERUP_NAME_TO_TOKEN_ID[id];
-
-  // Apply game effect immediately — don't wait for chain
-  powerUps.apply(id, { lives: gameState.lives, canvasW: canvas.width, playerY: player.y });
-
-  // Silent burn via session key
-  gameSession.burnPowerUp(
-    tokenId,
-    () => console.log(`${id} burned successfully`),
-    (reason) => {
-      // Burn failed — reverse the effect
-      console.error("Burn failed:", reason);
-      powerUps.reverseEffect(id);  // see note below
-    }
-  );
-}
-
-// ── Session expiry during game ────────────────────────────────
-// Check in your game loop HUD. If session expired mid-game,
-// show a non-blocking toast: "Session expired — power-ups disabled"
-// Don't pause the game.
-
-if (!gameSession.isActive) {
-  drawToast(ctx, "Power-ups unavailable — session expired");
-}
-
-*/
-
-// ─── NOTE on reverseEffect ───────────────────────────────────
-// For robustness, add reverseEffect() to PowerUpSystem.ts:
-//
-//   reverseEffect(id: PowerUpId) {
-//     if (id === "health") gameState.lives = Math.max(0, gameState.lives - 1);
-//     this.activeEffects = this.activeEffects.filter(e => e.id !== id);
-//     this.fireballs = []; // if fireball, deactivate
-//   }
-//
-// In practice burns rarely fail once session is established,
-// but optimistic + rollback is the right pattern.

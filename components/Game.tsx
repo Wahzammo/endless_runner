@@ -17,11 +17,14 @@ import {
   type Pattern,
 } from '@/lib/procgen';
 import { PowerUpSystem, type PowerUpId } from '@/lib/PowerUpSystem';
-import { gameSession } from '@/lib/GameSession';
+import {
+  getSubAccountAddress,
+  getInventoryCounts,
+  burnPowerUp,
+} from '@/lib/GameSession';
 import {
   CONSUMABLE_ITEMS_ADDRESS,
   POWERUP_TO_TOKEN_ID,
-  TOKEN_ID_TO_POWERUP,
 } from '@/lib/contract';
 
 // Game constants
@@ -50,11 +53,13 @@ const CHAOS_BAR_REFILL_FLASH_MS = 500;
 interface GameProps {
   onGameOver: (score: number) => void;
   isPaused: boolean;
-  /** Connected wallet address — enables on-chain inventory reads + mints. */
+  /** Connected wallet address (universal) — for display/leaderboard. */
   playerAddress?: `0x${string}`;
+  /** Sub Account address — power-ups are minted here and burned from here. */
+  subAccountAddress?: `0x${string}`;
 }
 
-export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress }) => {
+export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress, subAccountAddress: subAddr }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [score, setScore] = useState(0);
   const [commentary, setCommentary] = useState<string | null>(null);
@@ -172,22 +177,15 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
     const powerUpSystem = new PowerUpSystem();
     powerUpSystemRef.current = powerUpSystem;
 
-    // Load wallet inventory counts if the contract is deployed and
-    // player is connected. Falls back to granting 1 of each when the
-    // contract isn't configured (local dev / testnet without deploy).
-    if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
-      gameSession
-        .getInventoryCounts(playerAddress)
+    // Load inventory from the Sub Account if available, otherwise
+    // fall back to 1 of each for local dev / testnet without deploy.
+    const mintTarget = subAddr ?? getSubAccountAddress();
+    if (mintTarget && CONSUMABLE_ITEMS_ADDRESS) {
+      getInventoryCounts(mintTarget)
         .then((counts) => {
-          const inventory = new Map<PowerUpId, number>();
-          for (const [tokenId, count] of counts) {
-            const id = TOKEN_ID_TO_POWERUP[tokenId as keyof typeof TOKEN_ID_TO_POWERUP];
-            if (id) inventory.set(id, count);
-          }
-          powerUpSystem.setInventory(inventory);
+          powerUpSystem.setInventory(counts);
         })
         .catch(() => {
-          // Contract not deployed or read failed — fall back to 1 of each
           const fallback = new Map<PowerUpId, number>([
             ['health', 1], ['invincible', 1], ['timeslow', 1], ['fireball', 1],
           ]);
@@ -223,11 +221,13 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
         setLives(stateForApply.lives);
       }
 
-      // TODO NOR-207: Burn the NFT via session key (no wallet popup).
-      // The session key flow in GameSession.ts needs ERC-7715 + ERC-4337
-      // bundler integration with Coinbase Smart Wallet. Until then, the
-      // game effect applies locally but no on-chain burn happens.
-      // The item is still deducted from the local inventory for this run.
+      // Silent burn via Sub Account + CDP Paymaster (no wallet popup).
+      // Fire-and-forget — the game effect is already applied optimistically.
+      if (CONSUMABLE_ITEMS_ADDRESS) {
+        burnPowerUp(POWERUP_TO_TOKEN_ID[id]).catch(() => {
+          // Burn failed silently — player keeps the effect for this run
+        });
+      }
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -737,13 +737,15 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
       // Add to local inventory immediately (optimistic)
       powerUpSystem.addToInventory(id);
 
-      // Mint the item to the player's wallet in the background.
-      if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
+      // Mint the item to the Sub Account address in the background.
+      // The Sub Account holds the NFTs so it can burn them silently.
+      const target = subAddr ?? getSubAccountAddress();
+      if (target && CONSUMABLE_ITEMS_ADDRESS) {
         fetch('/api/mint-powerup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            playerAddress,
+            playerAddress: target,
             tokenId: POWERUP_TO_TOKEN_ID[id],
           }),
         }).catch(() => {
