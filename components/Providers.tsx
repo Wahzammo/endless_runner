@@ -11,21 +11,28 @@ import { ReactNode } from 'react';
 const queryClient = new QueryClient();
 
 // ─── Base Account SDK (Sub Accounts + Paymaster) ────────────
-// Runs alongside wagmi — wagmi handles reads/score submission,
-// the SDK handles sub-account creation and silent burns.
-export const baseSDK = createBaseAccountSDK({
-  appName: 'Base Runner: Psych-Out Arcade',
-  appLogoUrl: null,
-  appChainIds: [baseSepolia.id],
-  subAccounts: {
-    creation: 'on-connect',
-    defaultAccount: 'sub',
-    funding: 'manual', // no auto spend-permission popup
-  },
-  ...(process.env.NEXT_PUBLIC_PAYMASTER_URL
-    ? { paymasterUrls: { [baseSepolia.id]: process.env.NEXT_PUBLIC_PAYMASTER_URL } }
-    : {}),
-});
+// Lazily initialized on first access — must not run during SSR
+// because the SDK uses browser APIs (window, crypto, etc.).
+let _baseSDK: ReturnType<typeof createBaseAccountSDK> | null = null;
+
+export function getBaseSDK() {
+  if (!_baseSDK && typeof window !== 'undefined') {
+    _baseSDK = createBaseAccountSDK({
+      appName: 'Base Runner: Psych-Out Arcade',
+      appLogoUrl: null,
+      appChainIds: [baseSepolia.id],
+      subAccounts: {
+        creation: 'on-connect',
+        defaultAccount: 'sub',
+        funding: 'manual',
+      },
+      ...(process.env.NEXT_PUBLIC_PAYMASTER_URL
+        ? { paymasterUrls: { [baseSepolia.id]: process.env.NEXT_PUBLIC_PAYMASTER_URL } }
+        : {}),
+    });
+  }
+  return _baseSDK!;
+}
 
 // ─── Wagmi config (unchanged) ───────────────────────────────
 export const wagmiConfig = createConfig({

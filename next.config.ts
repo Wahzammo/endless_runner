@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: false,
   },
   output: 'standalone',
-  transpilePackages: ['motion'],
+  transpilePackages: ['motion', '@base-org/account'],
   turbopack: {},
   webpack: (config, {dev}) => {
     // HMR is disabled in AI Studio via DISABLE_HMR env var.

@@ -14,7 +14,7 @@
 
 import { encodeFunctionData, createPublicClient, http, type Address } from 'viem';
 import { baseSepolia } from 'viem/chains';
-import { baseSDK } from '@/components/Providers';
+import { getBaseSDK } from '@/components/Providers';
 import {
   CONSUMABLE_ITEMS_ABI,
   CONSUMABLE_ITEMS_ADDRESS,
@@ -44,7 +44,7 @@ export async function startSession(): Promise<{
   subAccount: Address;
   universal: Address;
 }> {
-  const provider = baseSDK.getProvider();
+  const provider = getBaseSDK().getProvider();
 
   // eth_requestAccounts triggers the connect popup on first use.
   // With defaultAccount: 'sub', accounts[0] = sub, accounts[1] = universal.
@@ -69,7 +69,7 @@ export async function startSession(): Promise<{
  */
 export async function getExistingSubAccount(): Promise<Address | null> {
   try {
-    const sub = await baseSDK.subAccount.get();
+    const sub = await getBaseSDK().subAccount.get();
     if (sub?.address) {
       subAccountAddress = sub.address as Address;
       return subAccountAddress;
@@ -111,7 +111,7 @@ export async function burnPowerUp(tokenId: number): Promise<string | null> {
   if (!subAccountAddress || !CONSUMABLE_ITEMS_ADDRESS) return null;
 
   try {
-    const provider = baseSDK.getProvider();
+    const provider = getBaseSDK().getProvider();
 
     const callsId = (await provider.request({
       method: 'wallet_sendCalls',
