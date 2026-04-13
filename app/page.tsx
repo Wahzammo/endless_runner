@@ -7,12 +7,7 @@ import { GameErrorBoundary } from '@/components/GameErrorBoundary';
 import { useAccount, useWriteContract } from 'wagmi';
 import { motion, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
-import {
-  ONCHAIN_ARCADE_ABI,
-  ONCHAIN_ARCADE_ADDRESS,
-  CONSUMABLE_ITEMS_ABI,
-  CONSUMABLE_ITEMS_ADDRESS,
-} from '@/lib/contract';
+import { ONCHAIN_ARCADE_ABI, ONCHAIN_ARCADE_ADDRESS } from '@/lib/contract';
 
 export default function Home() {
   const { isConnected, address } = useAccount();
@@ -22,7 +17,6 @@ export default function Home() {
   const [paused, setPaused] = useState(false);
 
   const { writeContract, isPending: isSubmitting, isSuccess: isSubmitted, isError: submitError } = useWriteContract();
-  const { writeContract: writeBurn } = useWriteContract();
 
   const startGame = useCallback(() => {
     if (!isConnected) return;
@@ -40,16 +34,6 @@ export default function Home() {
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [gameState]);
-
-  const handleBurnPowerUp = useCallback((tokenId: number) => {
-    if (!CONSUMABLE_ITEMS_ADDRESS) return;
-    writeBurn({
-      address: CONSUMABLE_ITEMS_ADDRESS,
-      abi: CONSUMABLE_ITEMS_ABI,
-      functionName: 'useAndBurn',
-      args: [BigInt(tokenId)],
-    });
-  }, [writeBurn]);
 
   const handleGameOver = (score: number) => {
     setFinalScore(score);
@@ -118,7 +102,7 @@ export default function Home() {
               className="w-full"
             >
               <GameErrorBoundary onReset={startGame}>
-                <Game key={gameKey} onGameOver={handleGameOver} isPaused={paused} playerAddress={address} onBurnPowerUp={handleBurnPowerUp} />
+                <Game key={gameKey} onGameOver={handleGameOver} isPaused={paused} playerAddress={address} />
               </GameErrorBoundary>
             </motion.div>
           )}

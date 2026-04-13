@@ -52,11 +52,9 @@ interface GameProps {
   isPaused: boolean;
   /** Connected wallet address — enables on-chain inventory reads + mints. */
   playerAddress?: `0x${string}`;
-  /** Callback to burn a power-up NFT from the player's wallet. */
-  onBurnPowerUp?: (tokenId: number) => void;
 }
 
-export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress, onBurnPowerUp }) => {
+export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [score, setScore] = useState(0);
   const [commentary, setCommentary] = useState<string | null>(null);
@@ -225,12 +223,11 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress,
         setLives(stateForApply.lives);
       }
 
-      // Burn the NFT from the wallet via wagmi writeContract (fire-and-forget).
-      // The player will see a wallet popup to confirm the burn.
-      // Session keys (NOR-207) will remove the popup in a future update.
-      if (onBurnPowerUp && CONSUMABLE_ITEMS_ADDRESS) {
-        onBurnPowerUp(POWERUP_TO_TOKEN_ID[id]);
-      }
+      // TODO NOR-207: Burn the NFT via session key (no wallet popup).
+      // The session key flow in GameSession.ts needs ERC-7715 + ERC-4337
+      // bundler integration with Coinbase Smart Wallet. Until then, the
+      // game effect applies locally but no on-chain burn happens.
+      // The item is still deducted from the local inventory for this run.
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
