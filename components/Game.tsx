@@ -52,9 +52,11 @@ interface GameProps {
   isPaused: boolean;
   /** Connected wallet address — enables on-chain inventory reads + mints. */
   playerAddress?: `0x${string}`;
+  /** Callback to burn a power-up NFT from the player's wallet. */
+  onBurnPowerUp?: (tokenId: number) => void;
 }
 
-export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress }) => {
+export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress, onBurnPowerUp }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [score, setScore] = useState(0);
   const [commentary, setCommentary] = useState<string | null>(null);
@@ -223,13 +225,11 @@ export const Game: React.FC<GameProps> = ({ onGameOver, isPaused, playerAddress 
         setLives(stateForApply.lives);
       }
 
-      // Burn the NFT from the wallet in the background (fire-and-forget).
-      // If burn fails, the item was already used — acceptable on testnet.
-      if (playerAddress && CONSUMABLE_ITEMS_ADDRESS) {
-        const tokenId = POWERUP_TO_TOKEN_ID[id];
-        gameSession.burnPowerUp(tokenId).catch(() => {
-          // Burn failed silently — player keeps the effect
-        });
+      // Burn the NFT from the wallet via wagmi writeContract (fire-and-forget).
+      // The player will see a wallet popup to confirm the burn.
+      // Session keys (NOR-207) will remove the popup in a future update.
+      if (onBurnPowerUp && CONSUMABLE_ITEMS_ADDRESS) {
+        onBurnPowerUp(POWERUP_TO_TOKEN_ID[id]);
       }
     };
 
