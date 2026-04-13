@@ -43,7 +43,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "10.2.0",
-    "eslint-config-next": "16.2.2",
+    "eslint-config-next": "16.2.3",
     "hardhat": "^3.3.0",
     "jsdom": "^29.0.1",
     "tailwindcss": "4.2.2",
