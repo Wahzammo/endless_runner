@@ -19,7 +19,6 @@ An endless runner on Base with a sarcastic AI commentator and onchain high score
    | Variable | Required | Description |
    |---|---|---|
    | `GEMINI_API_KEY` | Yes | Google Gemini API key (server-side only — never exposed to browser) |
-   | `NEXT_PUBLIC_ONCHAINKIT_API_KEY` | Yes | Coinbase OnchainKit API key |
    | `NEXT_PUBLIC_CONTRACT_ADDRESS` | Yes | Deployed `OnchainArcade` contract address on Base Sepolia |
    | `APP_URL` | No | URL where the app is hosted |
 
@@ -37,4 +36,4 @@ The `OnchainArcade.sol` contract in `contracts/` needs to be deployed to Base Se
 - **Game:** Canvas-based endless runner with speed ramp and obstacle generation
 - **AI Commentator:** Gemini AI via a server-side API route (`/api/commentary`) — trash-talks on death and milestones
 - **Onchain Scores:** `submitScore()` writes to Base Sepolia via wagmi; leaderboard reads `getTopScores()` live
-- **Wallet:** Coinbase OnchainKit with Base Sepolia support
+- **Wallet:** Coinbase Smart Wallet via wagmi on Base Sepolia
