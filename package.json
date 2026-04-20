@@ -41,7 +41,7 @@
     "@types/node": "^25",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "10.2.0",
+    "eslint": "10.2.1",
     "eslint-config-next": "16.2.3",
     "hardhat": "^3.3.0",
     "jsdom": "^29.0.2",
