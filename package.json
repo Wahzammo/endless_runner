@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^7.0.0",
-    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.3",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.4",
     "@tailwindcss/postcss": "4.2.2",
     "@tailwindcss/typography": "^0.5.19",
     "@testing-library/jest-dom": "^6.9.1",
